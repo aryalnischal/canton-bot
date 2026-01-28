@@ -1,0 +1,100 @@
+[
+  {
+    "id": "TEST-123",
+    "timestamp": 1768869195904,
+    "symbol": "BTC",
+    "action": "BUY",
+    "rsi": 30,
+    "trend_slope": 2.5,
+    "volatility": 0.05,
+    "funding_rate": 0.0001,
+    "volume_surge": 1,
+    "distance_from_sma": -0.02,
+    "result_pnl_percent": 5,
+    "target_class": 1
+  },
+  {
+    "id": "1768967498089-bjg7upv",
+    "timestamp": 1768967498225,
+    "symbol": "SUIUSDT",
+    "action": "SELL",
+    "rsi": 50,
+    "trend_slope": 3.474136273315814,
+    "volatility": 0.02994886778670557,
+    "funding_rate": 0.027006,
+    "volume_surge": 0,
+    "distance_from_sma": 0
+  },
+  {
+    "id": "1768967541575-7lds0lh",
+    "timestamp": 1768967541611,
+    "symbol": "CRVUSDT",
+    "action": "SELL",
+    "rsi": 50,
+    "trend_slope": 3.5167680952997493,
+    "volatility": 0.02117722844029297,
+    "funding_rate": 0.02037696,
+    "volume_surge": 0,
+    "distance_from_sma": 0
+  },
+  {
+    "id": "1768968817826-34vxa8t",
+    "timestamp": 1768968817866,
+    "symbol": "BTCUSDT",
+    "action": "SELL",
+    "rsi": 50,
+    "trend_slope": 3.161579814445504,
+    "volatility": 0.015299898149909901,
+    "funding_rate": 0.03,
+    "volume_surge": 0,
+    "distance_from_sma": 0
+  },
+  {
+    "id": "1768968851429-j7e3344",
+    "timestamp": 1768968851443,
+    "symbol": "LDOUSDT",
+    "action": "SELL",
+    "rsi": 50,
+    "trend_slope": 3.924745701683327,
+    "volatility": 0.028314438302258164,
+    "funding_rate": 0.03,
+    "volume_surge": 0,
+    "distance_from_sma": 0
+  },
+  {
+    "id": "1769019567060-cwzbugf",
+    "timestamp": 1769019567098,
+    "symbol": "ETHUSDT",
+    "action": "SELL",
+    "rsi": 50,
+    "trend_slope": 3.442426661345041,
+    "volatility": 0.05494126967724157,
+    "funding_rate": 0.009261120000000001,
+    "volume_surge": 0,
+    "distance_from_sma": 0
+  },
+  {
+    "id": "1769056325220-lxcg3vg",
+    "timestamp": 1769056325240,
+    "symbol": "AVAXUSDT",
+    "action": "BUY",
+    "rsi": 50,
+    "trend_slope": 1.6530944625407262,
+    "volatility": 0.01650244332291913,
+    "funding_rate": -0.06390696,
+    "volume_surge": 0,
+    "distance_from_sma": 0
+  },
+  {
+    "id": "1769573040600-za82f9c",
+    "timestamp": 1769573040609,
+    "symbol": "CRVUSDT",
+    "action": "SELL",
+    "rsi": 50,
+    "trend_slope": 1.6662855836286732,
+    "volatility": 0.009969481180061003,
+    "funding_rate": 0.01909512,
+    "volume_surge": 0,
+    "distance_from_sma": 0
+  }
+]
