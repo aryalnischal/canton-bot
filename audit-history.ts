@@ -1,63 +1,91 @@
 
-const { Hyperliquid } = require('hyperliquid');
-const { Wallet } = require('ethers');
-const fs = require('fs');
-const dotenv = require('dotenv');
+import { Hyperliquid } from "hyperliquid";
+import { Wallet } from "ethers";
+import * as dotenv from 'dotenv';
+dotenv.config({ path: '.env.local' });
 
-// Load Env
-try {
-    const envConfig = dotenv.parse(fs.readFileSync('.env.local'));
-    for (const k in envConfig) {
-        process.env[k] = envConfig[k];
-    }
-} catch (e) {
-    console.error("No .env.local found");
-}
-
-async function auditHistory() {
-    console.log("📜 AUDITING TRADE HISTORY...");
-
+async function checkHistory() {
     const pKey = process.env.HL_PRIVATE_KEY;
-    const walletAddr = process.env.HL_WALLET_ADDRESS;
+    const address = process.env.HL_WALLET_ADDRESS;
+
+    if (!pKey || !address) {
+        console.error("Missing ENV Keys");
+        return;
+    }
+
     const wallet = new Wallet(pKey);
     const sdk = new Hyperliquid(wallet, false);
 
-    try {
-        // Fetch User's Recent Fills (Trades)
-        const fills = await sdk.info.getUserFills(walletAddr);
+    console.log(`🔍 AUDITING HISTORY FOR: ${address}`);
 
-        if (fills.length === 0) {
-            console.log("No trade history found.");
-            return;
+    try {
+        // userFills returns individual fills. 
+        // We need to approximate PnL by matching Opens/Closes or just dumping fills.
+        const fills = await sdk.info.getUserFills(address);
+
+        // Filter for CRV today
+        const now = Date.now();
+        const crvFills = fills.filter((f: any) =>
+            (f.coin === 'CRV' || f.coin === 'CRV-PERP') &&
+            (now - f.time) < 24 * 60 * 60 * 1000
+        );
+
+        console.log(`\nFound ${crvFills.length} CRV Fills in last 24h.`);
+
+        let totalVolume = 0;
+        let buyVol = 0;
+        let sellVol = 0;
+        let buyCost = 0;
+        let sellRev = 0;
+
+        crvFills.forEach((f: any) => {
+            const px = parseFloat(f.px);
+            const sz = parseFloat(f.sz);
+            const val = px * sz;
+
+            console.log(`[${new Date(f.time).toLocaleTimeString()}] ${f.side} ${sz.toFixed(1)} @ ${px.toFixed(4)} ($${val.toFixed(2)})`);
+
+            if (f.side === 'B') {
+                buyVol += sz;
+                buyCost += val;
+            } else {
+                sellVol += sz;
+                sellRev += val;
+            }
+            totalVolume += val;
+        });
+
+        console.log("\n--- PnL APPROXIMATION (FIFO Mixed) ---");
+        console.log(`Total Bought: ${buyVol.toFixed(1)} CRV ($${buyCost.toFixed(2)})`);
+        console.log(`Total Sold:   ${sellVol.toFixed(1)} CRV ($${sellRev.toFixed(2)})`);
+
+        const netSize = buyVol - sellVol;
+        console.log(`Net Position Change: ${netSize.toFixed(1)} CRV`);
+
+        // Crude PnL: (Sell Revenue - Buy Cost) but strictly only works if Flat.
+        // If Net Size != 0, we can't fully calc PnL without marking to market.
+        const realizedPnL = sellRev - (sellVol * (buyCost / buyVol || 0)); // Avg Cost basis
+        // This is very rough.
+
+        console.log(`Realized PnL (Est): $${(sellRev - buyCost).toFixed(2)} (Cashflow raw)`);
+
+        // Check Open Position
+        const state = await sdk.info.perpetuals.getClearinghouseState(address);
+        const openPos = state.assetPositions.find((p: any) => p.position.coin === 'CRV' || p.position.coin === 'CRV-PERP');
+
+        if (openPos) {
+            const p = openPos.position;
+            console.log(`\n📖 CURRENT OPEN POSITION:`);
+            console.log(`Size: ${p.szi} CRV`);
+            console.log(`Entry: $${p.entryPx}`);
+            console.log(`Unrealized PnL: $${p.unrealizedPnl}`);
+        } else {
+            console.log(`\n✅ NO OPEN CRV POSITION.`);
         }
 
-        console.log(`Analyzing last ${Math.min(fills.length, 50)} trades...`);
-
-        let realizedPnL = 0;
-        const closedTrades = [];
-
-        // Group fills by closing trades (approximation) or just list them
-        // Simplification: List realized PnL if available, or just the actions.
-        // Actually, 'fills' usually contains price/size/side. Realized PnL is tracked in clearinghouse state or computed.
-        // Let's dump the fills to see the structure first.
-
-        // Sorting: Newest first
-        fills.sort((a, b) => b.time - a.time);
-
-        const recent = fills.slice(0, 20).map(f => ({
-            time: new Date(f.time).toISOString(),
-            coin: f.coin,
-            side: f.side,
-            px: parseFloat(f.px),
-            sz: parseFloat(f.sz),
-            closedPnl: f.closedPnl ? parseFloat(f.closedPnl) : "N/A"
-        }));
-
-        console.table(recent);
-
     } catch (e) {
-        console.error("History Audit Error:", e);
+        console.error("Audit Failed:", e);
     }
 }
 
-auditHistory();
+checkHistory();
