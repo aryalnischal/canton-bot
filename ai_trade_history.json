@@ -96,5 +96,17 @@
     "funding_rate": 0.01909512,
     "volume_surge": 0,
     "distance_from_sma": 0
+  },
+  {
+    "id": "1770148919933-w6sli8d",
+    "timestamp": 1770148919951,
+    "symbol": "ZECUSDT",
+    "action": "SELL",
+    "rsi": 50,
+    "trend_slope": 5.424327906739637,
+    "volatility": 0.10709023610162775,
+    "funding_rate": 0.0029791200000000005,
+    "volume_surge": 0,
+    "distance_from_sma": 0
   }
 ]

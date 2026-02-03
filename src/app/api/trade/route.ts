@@ -33,33 +33,41 @@ export async function POST(req: Request) {
                 await dbConnect();
 
                 // 1. DUPLICATE CHECK
+                // 1. DUPLICATE CHECK
                 // Is there an OPEN trade for this symbol?
                 const existing = await Trade.findOne({ symbol, status: 'OPEN' });
                 if (existing) {
-                    console.warn(`[GATE] Blocked Duplicate: ${symbol} is already OPEN (ID: ${existing.id})`);
-                    return NextResponse.json({ success: false, error: `Duplicate: ${symbol} is already Active.` }, { status: 400 });
+                    // FIX: Only block if we are doing the SAME action (e.g. Buy on Buy).
+                    // If we are Selling (Closing) on an open Buy, PERMIT IT.
+                    if (existing.action === action) {
+                        console.warn(`[GATE] Blocked Duplicate: ${symbol} is already OPEN (ID: ${existing.id})`);
+                        return NextResponse.json({ success: false, error: `Duplicate: ${symbol} is already Active.` }, { status: 400 });
+                    }
+                    // Else: It's a Sell on a Buy (Close/Flip) -> Allow.
                 }
 
                 // 2. COOLDOWN CHECK (Anti-Reentry)
-                // Did we Lose on this symbol in the last 4 hours?
-                const fourHoursAgo = Date.now() - (4 * 60 * 60 * 1000);
-                const recentLoss = await Trade.findOne({
+                // New Rule (Strict): If we closed ANY trade (Win/Loss) on this symbol in last 30m, WAIT.
+                // This prevents the "Infinite Loop" where bot re-buys immediately after a Close.
+                const thirtyMinAgo = Date.now() - (30 * 60 * 1000);
+                const recentClose = await Trade.findOne({
                     symbol,
                     status: 'CLOSED',
-                    result: 'LOSS', // Assumes Analyzer sets this, OR we check pnlValue < 0
-                    $or: [
-                        { result: 'LOSS' },
-                        { pnlValue: { $lt: 0 } }
-                    ],
-                    exitTime: { $gt: fourHoursAgo }
+                    exitTime: { $gt: thirtyMinAgo }
                 });
 
-                if (recentLoss) {
-                    // EXCEPTION: Strategy Override (e.g. "Magnet" might be allowed)
-                    // For now, strict block.
-                    console.warn(`[GATE] Blocked Cooldown: ${symbol} Lost recently (Exit: ${new Date(recentLoss.exitTime).toLocaleTimeString()})`);
-                    return NextResponse.json({ success: false, error: `Cooldown: ${symbol} recently lost. Wait 4h.` }, { status: 429 });
+                if (recentClose) {
+                    // Exception: Could add manual override flag here later.
+                    const readyAt = new Date(recentClose.exitTime + (30 * 60 * 1000)).toLocaleTimeString();
+                    console.warn(`[GATE] Blocked Cooldown: ${symbol} closed recently. Wait until ${readyAt}`);
+                    return NextResponse.json({ success: false, error: `Cooldown: Recently active. Restricted until ${readyAt}` }, { status: 429 });
                 }
+
+                // Compatibility: We can also keep the 4h Loss check if we want EXTRA safety for losses,
+                // but 30m strict is a good baseline. Let's keep 4h for LOSSES specifically?
+                // Actually, strict 30m covers "immediate churn".
+                // If we want to keep the "Stop Loss Punishment" (4h), we can check that separately.
+                // For now, let's Stick to the Plan: 30m Strict for everything.
 
             } catch (gateError) {
                 console.error("[GATE] DB Check Failed (Permitting Trade for Safety Fallback)", gateError);
