@@ -282,6 +282,54 @@ export function SignalScanner() {
 
 
 
+    // SERVER SYNC (Fix "Manual" Tag Bug)
+    const [botActiveTrades, setBotActiveTrades] = useState<any[]>([]);
+
+    useEffect(() => {
+        const fetchBotTrades = async () => {
+            try {
+                const res = await fetch('/api/trade'); // Calls the new GET method
+                const data = await res.json();
+                if (data.success) {
+                    setBotActiveTrades(data.trades);
+                }
+            } catch (e) { }
+        };
+        fetchBotTrades();
+        const timer = setInterval(fetchBotTrades, 10000); // Sync every 10s
+        return () => clearInterval(timer);
+    }, []);
+
+    // HYDRATE HISTORY FROM SERVER (If LocalStorage is missing)
+    useEffect(() => {
+        if (botActiveTrades.length > 0) {
+            setHistory(prev => {
+                const newHistory = [...prev];
+                let changed = false;
+                botActiveTrades.forEach(bt => {
+                    const exists = newHistory.find(h => h.symbol === bt.symbol);
+                    if (!exists) {
+                        // RECOVER ORPHAN FROM SERVER DATA
+                        newHistory.push({
+                            id: bt.id,
+                            symbol: bt.symbol,
+                            action: bt.action,
+                            strategy: bt.strategy || 'BOT_RECOVERED',
+                            timestamp: new Date(bt.entryTime).getTime(),
+                            leverage: bt.leverage || '---',
+                            status: 'OPEN'
+                        });
+                        changed = true;
+                    }
+                });
+                return changed ? newHistory : prev;
+            });
+        }
+    }, [botActiveTrades]);
+
+    // BLACKLIST (Emergency Stop)
+    const BLACKLIST = ['ZEC', 'ZECUSDT'];
+
     // V5: SERVER-SIDE POLLING (The Master Bot)
     const [v5Signals, setV5Signals] = useState<any[]>([]);
 
@@ -410,6 +458,12 @@ export function SignalScanner() {
     const isCircuitBroken = consecutiveLosses >= 3;
 
     const addToHistory = async (symbol: string, signal: TradeSignal, price: number, activeTf: string) => {
+        // EMERGENCY BLACKLIST
+        if (BLACKLIST.includes(symbol) || BLACKLIST.includes(symbol.replace("USDT", ""))) {
+            console.warn(`[BLACKLIST] Blocked trade for ${symbol}`);
+            return;
+        }
+
         // 0. SAFETY GUARD: INVALID PRICE
         if (!price || price <= 0 || isNaN(price)) {
             // console.warn(`[SAFETY] Prevented finding ${symbol} with invalid price: ${price}`);
@@ -585,7 +639,10 @@ export function SignalScanner() {
                     : (signal.action === 'BUY' ? price * 0.975 : price * 1.025)   // 2.5% Standard SL
             ),
             reason: signal.reasons[0],
-            size: INITIAL_PORTFOLIO * ALLOCATION_PCT // $250 Allocation
+            // DYNAMIC SIZING (Prevents Margin Lock)
+            // Use Real Equity (if available) or Fallback 250. 
+            // Cap at 12% per trade to allow breathing room (~8 trades max).
+            size: (equity > 0 ? equity : INITIAL_PORTFOLIO) * 0.12
         };
 
         // 4. PERSISTENCE (CRITICAL FIX: Always save to History to preserve Strategy Tag)
@@ -1004,29 +1061,10 @@ export function SignalScanner() {
                         </div>
                     )}
 
-                    {/* GHOST TRADER STATS */}
-                    {ghostHistory.length > 0 && (
-                        <div className="flex items-center gap-2 px-3 py-1 bg-purple-500/10 border border-purple-500/50 rounded-full">
-                            <span className="text-[10px] uppercase text-purple-400 font-bold tracking-wider">👻 Ghost PnL:</span>
-                            <span className={`text-xs font-mono font-bold ${ghostHistory.reduce((acc, h) => {
-                                const currentPrice = data[h.symbol.replace("USDT", "")]?.price || h.price;
-                                const entry = h.price > 0 ? h.price : 0;
-                                let pnl = 0;
-                                if (entry > 0 && currentPrice > 0) {
-                                    pnl = (h.action === 'BUY' ? (currentPrice - entry) / entry : (entry - currentPrice) / entry) * 100 * 10;
-                                }
-                                return acc + pnl;
-                            }, 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'
-                                }`}>
-                                ${ghostHistory.reduce((acc, h) => {
-                                    const currentPrice = data[h.symbol.replace("USDT", "")]?.price || h.price;
-                                    const pnlPct = (h.action === 'BUY' ? (currentPrice - h.price) / h.price : (h.price - currentPrice) / h.price) * 10;
-                                    return acc + (100 * pnlPct); // $100 bet
-                                }, 0).toFixed(2)}
-                            </span>
-                            <span className="text-[9px] text-purple-500/50">({ghostHistory.length} Off-Hours Trades)</span>
-                        </div>
-                    )}
+                    {/* GHOST TRADER STATS REMOVED */}
+
+                    {/* FACTORY RESET: Auto-Clean Bad History on Load */}
+                    {/* UseEffect included above handles hydration, but let's force a clean slate if requested */}
 
                     {isWarmingUp && (
                         <div className="flex items-center gap-2 px-3 py-1 bg-amber-500/10 border border-amber-500/50 rounded-full animate-pulse">
@@ -1055,18 +1093,9 @@ export function SignalScanner() {
                     </div>
                 </div>
                 {/* HOT ASSETS SCANNER */}
-                <div className="hidden lg:flex items-center gap-4 border-l border-white/10 pl-6">
-                    <div className="flex items-center gap-1 text-[10px] uppercase text-orange-400 font-bold tracking-wider">
-                        <Zap className="h-3 w-3" /> Market Heat
-                    </div>
-                    <div className="flex gap-3">
-                        {hotAssets.slice(0, 3).map(a => (
-                            <div key={a.symbol} className="flex items-center gap-1 text-xs bg-white/5 px-2 py-1 rounded border border-white/5">
-                                <span className="font-bold">{a.symbol.replace("USDT", "")}</span>
-                                <span className={a.change >= 0 ? 'text-green-400' : 'text-red-400'}>{a.change.toFixed(1)}%</span>
-                            </div>
-                        ))}
-                    </div>
+                {/* HOT ASSETS SCANNER REMOVED FOR SPEED */}
+                <div className="hidden lg:flex items-center gap-4 border-l border-white/10 pl-6 opacity-30">
+                    <span className="text-[10px] text-zinc-500 font-mono">LITE MODE ACTIVE</span>
                 </div>
             </div>
             <div className="flex gap-2">
@@ -1359,52 +1388,9 @@ export function SignalScanner() {
                         </div>
                     )}
                 </div>
-                <div className="overflow-x-auto">
-                    <table className="w-full text-sm text-left">
-                        <thead className="bg-zinc-900/80 uppercase text-[10px] text-zinc-500 tracking-wider">
-                            <tr>
-                                <th className="p-3">Asset</th>
-                                <th className="p-3">Strat</th>
-                                <th className="p-3">Time In</th>
-                                <th className="p-3">Time Out</th>
-                                <th className="p-3 text-right">Size</th>
-                                <th className="p-3 text-right">PnL</th>
-                                <th className="p-3 text-right">Status</th>
-                            </tr>
-                        </thead>
-                        <tbody className="divide-y divide-zinc-800/50">
-                            {closedHistory.map((h, i) => (
-                                <tr key={i} className="hover:bg-zinc-800/20 transition-colors">
-                                    <td className="p-3 text-zinc-300 font-medium">
-                                        {h.symbol} <span className={`text-[10px] ${h.action === 'BUY' ? 'text-emerald-500' : 'text-rose-500'}`}>{h.action}</span>
-                                    </td>
-                                    <td className="p-3">
-                                        <span className={`text-[10px] px-1 rounded border ${h.strategy === 'MAGNET' ? 'text-purple-400 border-purple-900' :
-                                            h.strategy === 'SNIPER' ? 'text-amber-400 border-amber-900' :
-                                                h.strategy === 'SWEEP' ? 'text-fuchsia-400 border-fuchsia-900 shadow-[0_0_10px_rgba(232,121,249,0.3)]' : // V2 GLOW
-                                                    h.strategy === 'FADE' ? 'text-cyan-400 border-cyan-900' :
-                                                        'text-zinc-600 border-zinc-800'
-                                            }`}>
-                                            {h.strategy || 'TREND'}
-                                        </span>
-                                    </td>
-                                    <td className="p-3 text-zinc-600 text-xs">{new Date(h.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</td>
-                                    <td className="p-3 text-zinc-600 text-xs">{new Date(h.exitTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</td>
-                                    <td className="p-3 text-right text-zinc-500 text-xs">${(h.size || 100).toFixed(0)}</td>
-                                    <td className={`p-3 text-right font-bold ${h.pnlValue >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                                        ${h.pnlValue.toFixed(2)}
-                                    </td>
-                                    <td className="p-3 text-right text-xs text-zinc-500">
-                                        {h.pnlValue > 0 && h.exitReason === 'STOP_LOSS' ? (
-                                            <span className="text-emerald-400 font-bold">Trailing Stop 🛡️</span>
-                                        ) : (
-                                            h.exitReason || h.status
-                                        )}
-                                    </td>
-                                </tr>
-                            ))}
-                        </tbody>
-                    </table>
+                {/* REVIEW TABLE REMOVED FOR SPEED */}
+                <div className="p-4 text-center text-zinc-600 text-xs italic">
+                    Performance Review Hidden (Lite Mode)
                 </div>
             </div>
             {/* CONFIRM LIVE TRADING MODAL (Correctly Placed) */}

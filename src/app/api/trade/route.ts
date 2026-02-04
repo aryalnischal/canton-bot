@@ -101,29 +101,71 @@ export async function POST(req: Request) {
             }
         );
 
-        // PERSISTENCE (V24): Save to MongoDB
+        // PERSISTENCE (V24): Save to MongoDB (Ledger Integrity Fix)
         if (result.success) {
             try {
-                // Ideally we import at top, but for safety in this robust function:
                 const { default: dbConnect } = await import('@/lib/db');
                 const { default: Trade } = await import('@/models/Trade');
-
                 await dbConnect();
 
-                await Trade.create({
-                    id: result.txHash || `TX-${Date.now()}`,
-                    symbol,
-                    action,
-                    price: result.filledPrice || currentPriceReference,
-                    size: result.filledSize ? (result.filledSize * (result.filledPrice || currentPriceReference)) : (size || 100),
-                    leverage: leverage || 1,
-                    status: body.reduceOnly ? 'CLOSED' : 'OPEN', // Heuristic
-                    txHash: result.txHash,
-                    strategy: body.strategy || 'API', // Pass this from Client
-                    sl: body.sl ? parseFloat(body.sl) : undefined,
-                    tp: body.tp ? parseFloat(body.tp) : undefined,
-                });
-                console.log(`[DB] Trade Saved: ${symbol} ${action} (${result.txHash})`);
+                const isClose = body.reduceOnly; // Heuristic: reduceOnly = Closing
+
+                if (isClose) {
+                    // UPDATE EXISTING OPEN TRADE (Prevent Double Counting/Ghosts)
+                    const updated = await Trade.findOneAndUpdate(
+                        { symbol, status: 'OPEN' },
+                        {
+                            $set: {
+                                status: 'CLOSED',
+                                exitTime: Date.now(),
+                                exitPrice: result.filledPrice || currentPriceReference,
+                                // Note: PnL calculation ideally happens here or via Analyzer background job
+                                // For now, we capture the Close Event accurately.
+                                closeTxHash: result.txHash
+                            }
+                        },
+                        { new: true }
+                    );
+
+                    if (updated) {
+                        console.log(`[DB] Trade Closed & Updated: ${symbol} (${result.txHash})`);
+                    } else {
+                        // Fallback: Orphan Close (Manual or Lost Open Rec) - Create Log Record
+                        console.warn(`[DB] Close Orphan: ${symbol} (No OPEN record). Saving as standalone.`);
+                        await Trade.create({
+                            id: result.txHash || `TX-${Date.now()}`,
+                            symbol,
+                            action,
+                            price: result.filledPrice || currentPriceReference,
+                            size: result.filledSize ? (result.filledSize * (result.filledPrice || currentPriceReference)) : (size || 100),
+                            leverage: leverage || 1,
+                            status: 'CLOSED', // It is closed
+                            txHash: result.txHash,
+                            strategy: body.strategy || 'MANUAL',
+                            entryTime: Date.now(), // Estimate
+                            exitTime: Date.now()
+                        });
+                    }
+
+                } else {
+                    // NEW OPEN TRADE
+                    await Trade.create({
+                        id: result.txHash || `TX-${Date.now()}`,
+                        symbol,
+                        action,
+                        price: result.filledPrice || currentPriceReference,
+                        size: result.filledSize ? (result.filledSize * (result.filledPrice || currentPriceReference)) : (size || 100),
+                        leverage: leverage || 1,
+                        status: 'OPEN',
+                        txHash: result.txHash,
+                        strategy: body.strategy || 'API',
+                        sl: body.sl ? parseFloat(body.sl) : undefined,
+                        tp: body.tp ? parseFloat(body.tp) : undefined,
+                        entryTime: Date.now()
+                    });
+                    console.log(`[DB] Trade Opened: ${symbol} ${action} (${result.txHash})`);
+                }
+
             } catch (dbEx) {
                 console.error("[DB] Failed to Save Trade:", dbEx);
                 // Non-critical, do not fail the response
@@ -134,6 +176,19 @@ export async function POST(req: Request) {
 
     } catch (e) {
         console.error("[API] Trade Error", e);
+        return NextResponse.json({ success: false, error: String(e) }, { status: 500 });
+    }
+}
+
+export async function GET() {
+    try {
+        const { default: dbConnect } = await import('@/lib/db');
+        const { default: Trade } = await import('@/models/Trade');
+        await dbConnect();
+
+        const activeTrades = await Trade.find({ status: 'OPEN' }).select('symbol strategy entryTime id action');
+        return NextResponse.json({ success: true, trades: activeTrades });
+    } catch (e) {
         return NextResponse.json({ success: false, error: String(e) }, { status: 500 });
     }
 }

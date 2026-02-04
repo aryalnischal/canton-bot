@@ -228,6 +228,17 @@ export class HyperliquidExecutionService {
 
         const decimals = assetInfo.decimals;
 
+        // FIX: Enforce ISOLATED Leverage (User Request) - ONLY ON OPEN
+        if (!reduceOnly) {
+            try {
+                console.log(`[EXECUTION] Setting Leverage: ${leverage}x (Isolated) for ${coin}`);
+                // Corrected Arg Order: Coin, isCross, Leverage. isCross = false (Isolated)
+                await this.sdk.exchange.updateLeverage(coin, false, leverage);
+            } catch (levErr) {
+                console.warn(`[EXECUTION] Failed to set Leverage (Proceeding anyway):`, levErr);
+            }
+        }
+
         // PREPARE DATA OUTSIDE TRY BLOCK
         const isBuy = action === 'BUY';
         const rawAmount = sizeUsd / currentPrice;
@@ -258,20 +269,7 @@ export class HyperliquidExecutionService {
         try {
             console.log(`[EXECUTION] Placing ${action} ${amount} ${coin} (ID: ${assetInfo.id}) @ ~${currentPrice}`);
 
-            // LEVERAGE UPDATE (Only for OPENING trades)
-            // If reduceOnly, keep existing leverage to avoid disturbing position mode.
-            if (!reduceOnly) {
-                try {
-                    // Update to Cross Margin with specified Leverage
-                    // Arg Order: (coin, isCross, leverage)
-                    // FIX: SDK expects "cross" string, not boolean true
-                    await this.sdk.exchange.updateLeverage(coin, "cross", leverage);
-                    console.log(`[EXECUTION] Leverage set to ${leverage}x (Cross) for ${coin}`);
-                } catch (levError: any) {
-                    console.error(`[EXECUTION] CRITICAL: Failed to Set Leverage to ${leverage}x for ${coin}: ${levError.message}`);
-                    return { success: false, error: `Leverage Set Failed: ${levError.message}` }; // ABORT TRADE
-                }
-            }
+
 
             logger.info(`[EXECUTION] ${reduceOnly ? 'MARKET CLOSE' : 'LIMIT OPEN'} | Price: ${currentPrice} -> Order: ${limitPx} (TIF: ${tif})`);
 
@@ -296,11 +294,49 @@ export class HyperliquidExecutionService {
                             else logger.warn(`[EXECUTION] ⚠️ FAILED TO ARM STOP LOSS: ${slResult.error}`);
                         } catch (slEx) { logger.warn(`[EXECUTION] SL ERROR`, slEx); }
                     }
-                    if (options.takeProfitPrice) {
+                    if (options.takeProfitPrice) { // LEGACY OPTION: If specific price passed, use it as Single TP (e.g. from Manual Trade)
                         try {
                             const tpResult = await this.executeTriggerOrder(symbol, !isBuy, amount, options.takeProfitPrice, 'tp');
-                            if (tpResult.success) logger.info(`[EXECUTION] 🎯 TAKE PROFIT ARMING COMPLETE @ $${options.takeProfitPrice}`);
+                            if (tpResult.success) logger.info(`[EXECUTION] 🎯 SINGLE TP ARMING COMPLETE @ $${options.takeProfitPrice}`);
                         } catch (tpEx) { logger.warn(`[EXECUTION] TP ERROR`, tpEx); }
+                    } else if (leverage > 1) {
+                        // AUTOMATED LAYERED TP STRATEGY (V24 UPGRADE)
+                        // Only auto-layer if leverage > 1 (implying bot trade) and no manual TP set.
+                        const entry = currentPrice;
+                        const direction = isBuy ? 1 : -1;
+
+                        // LEVELS:
+                        // 1. Safe: 25% Size @ +5% Gain
+                        // 2. Target: 25% Size @ +12% Gain
+                        // 3. Runner: 50% Size @ +30% Gain
+                        const layers = [
+                            { pct: 0.25, gain: 0.05 },
+                            { pct: 0.25, gain: 0.12 },
+                            { pct: 0.50, gain: 0.30 }
+                        ];
+
+                        logger.info(`[EXECUTION] 🎯 ARMING LAYERED TP (${symbol})...`);
+
+                        for (let i = 0; i < layers.length; i++) {
+                            try {
+                                const layer = layers[i];
+                                const targetPrice = entry * (1 + (layer.gain * direction));
+                                const layerSizeRaw = amount * layer.pct;
+                                // Round size to avoid dusty errors (assuming 1 decimal for now, ideal is asset precision)
+                                const layerSize = Math.floor(layerSizeRaw * 100) / 100;
+
+                                if (layerSize <= 0) continue;
+
+                                const res = await this.executeTriggerOrder(symbol, !isBuy, layerSize, targetPrice, 'tp');
+                                if (res.success) logger.info(`[EXECUTION]    ✅ TP${i + 1}: ${Math.round(layer.pct * 100)}% @ $${targetPrice.toFixed(4)}`);
+                                else logger.warn(`[EXECUTION]    ❌ TP${i + 1} Failed: ${res.error}`);
+
+                                // Small delay to prevent seq errors
+                                await new Promise(r => setTimeout(r, 200));
+                            } catch (ex) {
+                                logger.error(`[EXECUTION] Layer ${i + 1} Error`, ex);
+                            }
+                        }
                     }
                 }
 

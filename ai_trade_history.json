@@ -108,5 +108,17 @@
     "funding_rate": 0.0029791200000000005,
     "volume_surge": 0,
     "distance_from_sma": 0
+  },
+  {
+    "id": "1770152783709-hku2j2e",
+    "timestamp": 1770152783714,
+    "symbol": "ARBUSDT",
+    "action": "SELL",
+    "rsi": 50,
+    "trend_slope": 1.7031807263993073,
+    "volatility": 0.10136986301369859,
+    "funding_rate": 0.0067852799999999994,
+    "volume_surge": 0,
+    "distance_from_sma": 0
   }
 ]

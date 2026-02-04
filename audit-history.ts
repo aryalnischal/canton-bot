@@ -1,91 +1,54 @@
 
-import { Hyperliquid } from "hyperliquid";
-import { Wallet } from "ethers";
+import mongoose from 'mongoose';
 import * as dotenv from 'dotenv';
 dotenv.config({ path: '.env.local' });
 
-async function checkHistory() {
-    const pKey = process.env.HL_PRIVATE_KEY;
-    const address = process.env.HL_WALLET_ADDRESS;
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/canton-v5';
 
-    if (!pKey || !address) {
-        console.error("Missing ENV Keys");
-        return;
-    }
+const TradeSchema = new mongoose.Schema({
+    symbol: String,
+    status: String,
+    entryTime: Number,
+    exitTime: Number,
+    pnlValue: Number,
+    result: String,
+}, { strict: false });
 
-    const wallet = new Wallet(pKey);
-    const sdk = new Hyperliquid(wallet, false);
+const Trade = mongoose.models.Trade || mongoose.model('Trade', TradeSchema);
 
-    console.log(`🔍 AUDITING HISTORY FOR: ${address}`);
-
+async function audit() {
+    console.log("📜 AUDITING HISTORY LEDGER...");
     try {
-        // userFills returns individual fills. 
-        // We need to approximate PnL by matching Opens/Closes or just dumping fills.
-        const fills = await sdk.info.getUserFills(address);
+        await mongoose.connect(MONGODB_URI);
+        const closed = await Trade.find({ status: 'CLOSED' }).sort({ exitTime: -1 }).limit(50);
 
-        // Filter for CRV today
-        const now = Date.now();
-        const crvFills = fills.filter((f: any) =>
-            (f.coin === 'CRV' || f.coin === 'CRV-PERP') &&
-            (now - f.time) < 24 * 60 * 60 * 1000
-        );
+        console.log(`\nFound ${closed.length} Recent Closed Trades:`);
+        console.log("---------------------------------------------------");
+        console.log("SYMBOL  | RESULT   | PNL      | DURATION");
+        console.log("---------------------------------------------------");
 
-        console.log(`\nFound ${crvFills.length} CRV Fills in last 24h.`);
+        let junkCount = 0;
 
-        let totalVolume = 0;
-        let buyVol = 0;
-        let sellVol = 0;
-        let buyCost = 0;
-        let sellRev = 0;
+        closed.forEach(t => {
+            const durationSec = t.exitTime && t.entryTime ? (t.exitTime - t.entryTime) / 1000 : 0;
+            const isJunk = durationSec < 60; // Less than 1 min trade?
+            if (isJunk) junkCount++;
 
-        crvFills.forEach((f: any) => {
-            const px = parseFloat(f.px);
-            const sz = parseFloat(f.sz);
-            const val = px * sz;
-
-            console.log(`[${new Date(f.time).toLocaleTimeString()}] ${f.side} ${sz.toFixed(1)} @ ${px.toFixed(4)} ($${val.toFixed(2)})`);
-
-            if (f.side === 'B') {
-                buyVol += sz;
-                buyCost += val;
-            } else {
-                sellVol += sz;
-                sellRev += val;
-            }
-            totalVolume += val;
+            console.log(
+                `${t.symbol.padEnd(7)} | ` +
+                `${(t.result || '???').padEnd(8)} | ` +
+                `$${(t.pnlValue || 0).toFixed(2).padEnd(6)} | ` +
+                `${durationSec.toFixed(0)}s ${isJunk ? '(⚠️ FAST)' : ''}`
+            );
         });
 
-        console.log("\n--- PnL APPROXIMATION (FIFO Mixed) ---");
-        console.log(`Total Bought: ${buyVol.toFixed(1)} CRV ($${buyCost.toFixed(2)})`);
-        console.log(`Total Sold:   ${sellVol.toFixed(1)} CRV ($${sellRev.toFixed(2)})`);
-
-        const netSize = buyVol - sellVol;
-        console.log(`Net Position Change: ${netSize.toFixed(1)} CRV`);
-
-        // Crude PnL: (Sell Revenue - Buy Cost) but strictly only works if Flat.
-        // If Net Size != 0, we can't fully calc PnL without marking to market.
-        const realizedPnL = sellRev - (sellVol * (buyCost / buyVol || 0)); // Avg Cost basis
-        // This is very rough.
-
-        console.log(`Realized PnL (Est): $${(sellRev - buyCost).toFixed(2)} (Cashflow raw)`);
-
-        // Check Open Position
-        const state = await sdk.info.perpetuals.getClearinghouseState(address);
-        const openPos = state.assetPositions.find((p: any) => p.position.coin === 'CRV' || p.position.coin === 'CRV-PERP');
-
-        if (openPos) {
-            const p = openPos.position;
-            console.log(`\n📖 CURRENT OPEN POSITION:`);
-            console.log(`Size: ${p.szi} CRV`);
-            console.log(`Entry: $${p.entryPx}`);
-            console.log(`Unrealized PnL: $${p.unrealizedPnl}`);
-        } else {
-            console.log(`\n✅ NO OPEN CRV POSITION.`);
-        }
-
+        console.log("\n---------------------------------------------------");
+        console.log(`⚠️  Potential Junk (Duration < 60s): ${junkCount}`);
+        process.exit(0);
     } catch (e) {
-        console.error("Audit Failed:", e);
+        console.error(e);
+        process.exit(1);
     }
 }
 
-checkHistory();
+audit();
