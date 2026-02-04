@@ -418,7 +418,7 @@ export class HyperliquidExecutionService {
                         // Retry on specific errors that imply "Position Not Ready"
                         if (err.includes('margin') || err.includes('reduce-only') || err.includes('asset=')) {
                             console.warn(`[EXECUTION] Trigger Rejected (Likely No Pos): ${err}. Retrying ${attempt + 1}/${maxAttempts}...`);
-                            await new Promise(r => setTimeout(r, 1000));
+                            await new Promise(r => setTimeout(r, 1000)); // Fixed delay for logical readiness
                             attempt++;
                             continue;
                         }
@@ -428,8 +428,15 @@ export class HyperliquidExecutionService {
                 }
                 return { success: false, error: JSON.stringify(res) };
             } catch (e: any) {
-                console.warn(`[EXECUTION] Trigger Exception: ${e.message}. Retrying...`);
-                await new Promise(r => setTimeout(r, 1000));
+                // EXTREME RATE LIMIT PROTECTION (Backoff)
+                if (String(e).includes('429') || e?.code === 429) {
+                    const delay = Math.min(Math.pow(2, attempt) * 500, 5000); // 500ms, 1s, 2s, 4s, 5s...
+                    console.warn(`[EXECUTION] Trigger 429 Rate Limit. Backing off ${delay}ms...`);
+                    await new Promise(r => setTimeout(r, delay));
+                } else {
+                    console.warn(`[EXECUTION] Trigger Exception: ${e.message}. Retrying...`);
+                    await new Promise(r => setTimeout(r, 1000));
+                }
                 attempt++;
             }
         }
