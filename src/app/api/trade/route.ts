@@ -5,9 +5,20 @@ import { HyperliquidExecutionService } from '@/services/execution-engine';
 // Note: In Serverless/Next.js (Lambda), this might re-init per request. 
 // For standard Node server or Vercel warm lambda, it persists briefly.
 // Re-instantiating is cheap (just loading key), so it's fine.
+// Singleton Instance (to keep wallet connected)
 const engine = new HyperliquidExecutionService();
 
+// CONCURRENCY LOCK (Prevent Race Conditions)
+let isProcessing = false;
+
 export async function POST(req: Request) {
+    if (isProcessing) {
+        console.warn("[API] ⚠️ Rejecting Concurrent Trade Request (Busy)");
+        return NextResponse.json({ success: false, error: "System Busy (Concurrency Lock)" }, { status: 429 });
+    }
+
+    isProcessing = true;
+
     try {
         const body = await req.json();
         const { symbol, action, leverage, size } = body;
@@ -88,16 +99,25 @@ export async function POST(req: Request) {
         }
 
         // RISK MANAGEMENT: Server-Side Dynamic Sizing (Source of Truth)
-        // 1. Get Real Equity
-        const currentEquity = await engine.getAccountEquity();
-        // 2. Calculate Max Safe Size (12% of Equity)
+        // 1. Get Real Equity & Margin State
+        const accountState = await engine.getAccountState();
+        const currentEquity = accountState ? parseFloat(accountState.accountValue) : 0;
+        const marginUsed = accountState ? parseFloat(accountState.totalMarginUsed) : 0;
+        const freeMargin = currentEquity - marginUsed;
+
+        // 2. GLOBAL MARGIN CHECK (Prevent Saturation)
+        if (currentEquity > 0 && freeMargin < 20) {
+            console.warn(`[RISK] ⚠️ Rejecting Trade: Insufficient Free Margin ($${freeMargin.toFixed(2)} < $20). Account Saturated.`);
+            return NextResponse.json({ success: false, error: "Account Full (Insufficient Margin)" }, { status: 400 });
+        }
+
+        // 3. Calculate Max Safe Size (12% of Equity)
         // Fallback to $250 equity basis if API fails (returns 0), resulting in $30 trade.
         const equityBasis = currentEquity > 0 ? currentEquity : 250;
         const maxSafeSize = equityBasis * 0.12;
 
+        // 4. Clamp
         let safeSize = size || 50;
-
-        // 3. Clamp
         if (safeSize > maxSafeSize) {
             console.log(`[RISK] Clamping Size $${safeSize} -> $${maxSafeSize.toFixed(2)} (${(currentEquity > 0 ? "12% of Real Equity" : "Fallback Baseline")})`);
             safeSize = parseFloat(maxSafeSize.toFixed(2));
@@ -193,6 +213,8 @@ export async function POST(req: Request) {
     } catch (e) {
         console.error("[API] Trade Error", e);
         return NextResponse.json({ success: false, error: String(e) }, { status: 500 });
+    } finally {
+        isProcessing = false;
     }
 }
 

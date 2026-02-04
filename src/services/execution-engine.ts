@@ -179,18 +179,7 @@ export class HyperliquidExecutionService {
         return this.initializationPromise;
     }
 
-    public async getAccountState(): Promise<any> {
-        if (!this.sdk) this.initialize();
-        let attempts = 0;
-        while (!this.isReady && attempts < 10) {
-            await new Promise(r => setTimeout(r, 200));
-            attempts++;
-        }
-        if (!this.isReady) throw new Error("SDK not ready");
 
-        // Fix: Use .perpetuals namespace
-        return this.sdk.info.perpetuals.getClearinghouseState(this.wallet?.address);
-    }
 
 
     public async executeOrder(
@@ -444,14 +433,20 @@ export class HyperliquidExecutionService {
     }
 
 
-    public async getAccountEquity(): Promise<number> {
-        if (!this.isReady || !this.wallet) return 0;
+    public async getAccountState(): Promise<any> {
+        if (!this.isReady || !this.wallet) return null;
         try {
             const state = await this.sdk.info.perpetuals.getClearinghouseState(this.wallet.address);
-            return parseFloat(state.marginSummary.accountValue);
+            return state.marginSummary;
         } catch (e) {
-            logger.error("[EXECUTION] Failed to fetch Equity", e);
-            return 0;
+            logger.error("[EXECUTION] Failed to fetch Account State", e);
+            return null;
         }
+    }
+
+    public async getAccountEquity(): Promise<number> {
+        const summary = await this.getAccountState();
+        if (!summary) return 0;
+        return parseFloat(summary.accountValue);
     }
 }
