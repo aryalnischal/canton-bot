@@ -87,10 +87,26 @@ export async function POST(req: Request) {
             return NextResponse.json({ success: false, error: "Invalid Price Reference" }, { status: 400 });
         }
 
+        // RISK MANAGEMENT: Server-Side Dynamic Sizing (Source of Truth)
+        // 1. Get Real Equity
+        const currentEquity = await engine.getAccountEquity();
+        // 2. Calculate Max Safe Size (12% of Equity)
+        // Fallback to $250 equity basis if API fails (returns 0), resulting in $30 trade.
+        const equityBasis = currentEquity > 0 ? currentEquity : 250;
+        const maxSafeSize = equityBasis * 0.12;
+
+        let safeSize = size || 50;
+
+        // 3. Clamp
+        if (safeSize > maxSafeSize) {
+            console.log(`[RISK] Clamping Size $${safeSize} -> $${maxSafeSize.toFixed(2)} (${(currentEquity > 0 ? "12% of Real Equity" : "Fallback Baseline")})`);
+            safeSize = parseFloat(maxSafeSize.toFixed(2));
+        }
+
         const result = await engine.executeOrder(
             symbol,
             action,
-            size || 100, // Default $100 or use Env
+            safeSize, // Used Clamped Size
             currentPriceReference,
             leverage || 1,
             body.reduceOnly || false,

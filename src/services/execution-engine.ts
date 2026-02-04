@@ -437,4 +437,14 @@ export class HyperliquidExecutionService {
     }
 
 
+    public async getAccountEquity(): Promise<number> {
+        if (!this.isReady || !this.wallet) return 0;
+        try {
+            const state = await this.sdk.info.perpetuals.getClearinghouseState(this.wallet.address);
+            return parseFloat(state.marginSummary.accountValue);
+        } catch (e) {
+            logger.error("[EXECUTION] Failed to fetch Equity", e);
+            return 0;
+        }
+    }
 }

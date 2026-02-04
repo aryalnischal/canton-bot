@@ -1072,14 +1072,7 @@ export function SignalScanner() {
                             <span className="text-[10px] font-bold text-amber-400 uppercase tracking-widest">System Warning Up...</span>
                         </div>
                     )}
-                    {isCircuitBroken && (
-                        <div className="flex items-center gap-2 px-3 py-1 bg-red-600/10 border border-red-500/50 rounded-full animate-pulse">
-                            <AlertTriangle className="h-3 w-3 text-red-500" />
-                            <span className="text-[10px] font-bold text-red-400 uppercase tracking-widest">
-                                CIRCUIT BREAKER: TRADING HALTED ({consecutiveLosses} LOSSES)
-                            </span>
-                        </div>
-                    )}
+
                     <div className="hidden md:block h-8 w-px bg-white/10"></div>
                     <div className="flex flex-col">
                         <span className="text-[10px] uppercase text-zinc-400 font-bold tracking-wider">Portfolio (Live)</span>

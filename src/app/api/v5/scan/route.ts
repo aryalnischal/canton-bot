@@ -22,7 +22,7 @@ let metaCache: { data: any, timestamp: number } | null = null;
 let resultCache: { data: any, timestamp: number } | null = null;
 
 const CACHE_TTL = 5 * 60 * 1000; // 5 Minutes (Strong Caching for Universe)
-const RESULT_TTL = 15 * 1000;    // 15s Result Cache (Debounce)
+const RESULT_TTL = 30 * 1000;    // 30s Result Cache (Relieve Rate Limits)
 
 // LOCKING
 let isScanning = false;
@@ -32,12 +32,16 @@ async function fetchCandlesWithRetry(coin: string, attempt = 1): Promise<any> {
     try {
         return await sdk.info.getCandleSnapshot(coin, '15m', Date.now() - 24 * 60 * 60 * 1000, Date.now());
     } catch (e: any) {
-        if (attempt <= 3 && (String(e).includes('429') || e?.code === 429)) {
-            console.warn(`⚠️ Rate Limit (Candles ${coin}). Retrying in 2s...`);
-            await new Promise(r => setTimeout(r, 2000));
+        if (attempt <= 4 && (String(e).includes('429') || e?.code === 429)) {
+            // Exponential Backoff: 1s, 2s, 4s, 8s
+            const delay = Math.pow(2, attempt - 1) * 1000;
+            console.warn(`⚠️ Rate Limit (Candles ${coin}). Retrying in ${delay}ms...`);
+            await new Promise(r => setTimeout(r, delay));
             return fetchCandlesWithRetry(coin, attempt + 1);
         }
-        throw e;
+        // Fallback: Return empty candles instead of crashing scan?
+        console.warn(`❌ Failed to fetch candles for ${coin} after ${attempt} attempts.`);
+        return [];
     }
 }
 
