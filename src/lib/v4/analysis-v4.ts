@@ -185,7 +185,7 @@ export function generateV4Signal(
     };
 }
 
-function calculateATR(candles: { c: number, v: number, h?: number, l?: number }[], period: number) {
+export function calculateATR(candles: { c: number, v: number, h?: number, l?: number }[], period: number) {
     if (!candles[0].h) {
         const closes = candles.map(c => c.c).slice(-period);
         const mean = closes.reduce((a, b) => a + b, 0) / period;

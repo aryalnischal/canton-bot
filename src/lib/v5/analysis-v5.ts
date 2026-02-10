@@ -1,7 +1,6 @@
-
-import { generateTradeSignal } from "../analysis.ts";
-import { generateV3Signal } from "../v3/analysis-v3.ts";
-import { generateV4Signal } from "../v4/analysis-v4.ts";
+import { generateTradeSignal } from "../analysis";
+import { generateV3Signal } from "../v3/analysis-v3";
+import { generateV4Signal } from "../v4/analysis-v4";
 import type { ExchangeMetric } from "../types.ts";
 import type { CoinglassData } from "../../services/coinglass-mock.ts";
 import type { OnChainMetrics } from "../../services/on-chain-mock.ts";
@@ -111,6 +110,29 @@ export function generateV5Consensus(
         else if (absScore >= 0.70) leverage = 10; // STRONG -> AGGRESSIVE
         else if (absScore >= 0.45) leverage = 5;  // MODERATE -> STANDARD (Widened Range)
         else leverage = 3;                        // WEAK -> ACTIVE SCALP (Was 2x)
+    }
+
+    // 6. VOLATILITY GUARD (New Safety Layer)
+    // If asset moved > 8% in 24h, it's "Volatile".
+    // Rule: Must have > 0.60 Score to enter (Strict). Max Leverage 4x.
+    const priceChange = Math.abs(metrics[0]?.priceChange24h || 0);
+    if (priceChange > 8.0) {
+        if (action !== 'NEUTRAL') {
+            // STRICTER ENTRY
+            if (Math.abs(rawScore) < 0.60) {
+                action = 'NEUTRAL';
+                leverage = 0;
+                reasons.push(`⚠️ Volatile (${priceChange.toFixed(1)}%): Score < 0.60 (Safeguard)`);
+            } else {
+                // CAP LEVERAGE
+                if (leverage > 4) {
+                    leverage = 4;
+                    reasons.push(`⚠️ Volatile (${priceChange.toFixed(1)}%): Lev Capped 4x`);
+                }
+                // WIDER TP
+                reasons.push("🎯 Target: Wide (Vol Reg)");
+            }
+        }
     }
 
     // Capture individual reasons for context

@@ -1,0 +1,76 @@
+{
+  "config": {
+    "restEndpoint": "https://dydx-ops-rpc.kingnodes.com:443",
+    "chainId": "dydx-mainnet-1",
+    "denoms": {
+      "CHAINTOKEN_DENOM": "adydx",
+      "USDC_DENOM": "ibc/8E27BA2D5493AF5636760E354E46004562C46AB7EC0CC4C1CA14E9E20E2545B5",
+      "USDC_GAS_DENOM": "uusdc",
+      "USDC_DECIMALS": 6,
+      "CHAINTOKEN_DECIMALS": 18
+    },
+    "defaultClientMemo": "Client Example"
+  },
+  "_get": {
+    "tendermintClient": {
+      "baseClient": {
+        "client": {
+          "url": "https://dydx-ops-rpc.kingnodes.com:443"
+        }
+      },
+      "broadcastOptions": {
+        "broadcastPollIntervalMs": 300,
+        "broadcastTimeoutMs": 8000
+      }
+    },
+    "stargateQueryClient": {
+      "cometClient": "[Circular]",
+      "tx": {
+        "getTx": "FUNCTION",
+        "simulate": "FUNCTION"
+      }
+    }
+  },
+  "_post": {
+    "selectedGasDenom": "USDC",
+    "useTimestampNonce": false,
+    "timestampNonceOffsetMs": 0,
+    "accountNumberCache": {},
+    "get": "[Circular]",
+    "chainId": "dydx-mainnet-1",
+    "registry": {
+      "types": {}
+    },
+    "composer": {},
+    "denoms": "[Circular]",
+    "defaultClientMemo": "Client Example",
+    "defaultGasPrice": {
+      "amount": {
+        "data": {
+          "atomics": {
+            "negative": 0,
+            "words": "...",
+            "length": 3,
+            "red": "..."
+          },
+          "fractionalDigits": 18
+        }
+      },
+      "denom": "uusdc"
+    },
+    "defaultDydxGasPrice": {
+      "amount": {
+        "data": {
+          "atomics": {
+            "negative": 0,
+            "words": "...",
+            "length": 4,
+            "red": "..."
+          },
+          "fractionalDigits": 18
+        }
+      },
+      "denom": "adydx"
+    }
+  }
+}

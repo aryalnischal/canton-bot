@@ -120,5 +120,29 @@
     "funding_rate": 0.0067852799999999994,
     "volume_surge": 0,
     "distance_from_sma": 0
+  },
+  {
+    "id": "1770271734714-pr49yca",
+    "timestamp": 1770271735020,
+    "symbol": "BTCUSDT",
+    "action": "SELL",
+    "rsi": 50,
+    "trend_slope": 7.728900389450848,
+    "volatility": 0.04526655713557306,
+    "funding_rate": 0.03,
+    "volume_surge": 0,
+    "distance_from_sma": 0
+  },
+  {
+    "id": "1770338493520-5lzys7i",
+    "timestamp": 1770338493635,
+    "symbol": "LDOUSDT",
+    "action": "SELL",
+    "rsi": 50,
+    "trend_slope": 22.423432784127453,
+    "volatility": 0.13215128515849217,
+    "funding_rate": 0.03,
+    "volume_surge": 0,
+    "distance_from_sma": 0
   }
 ]
