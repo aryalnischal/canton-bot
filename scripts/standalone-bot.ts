@@ -220,6 +220,12 @@ async function main() {
                     const pos = openPositions[t.symbol];
                     const size = pos ? parseFloat(pos.size) : 0;
 
+                    // GRACE PERIOD: Don't close trades created < 30s ago
+                    // (Prevents race condition where DB is faster than dYdX API)
+                    const entryTime = t.entryTime || t.createdAt;
+                    const age = Date.now() - new Date(entryTime).getTime();
+                    if (age < 30000) continue;
+
                     if (!pos || size === 0) {
                         console.log(`${CYAN}👻 RECONCILIATION: ${t.symbol} is closed on-chain but OPEN in DB. Marking CLOSED.${RESET}`);
 
