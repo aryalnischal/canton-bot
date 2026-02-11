@@ -112,7 +112,22 @@ async function main() {
                         // We do NOT place a Hard SL (User request). 
                         // We rely on the Loop's Soft SL (-5%) to close if needed.
 
-                        const size = 50; // USD Size
+
+                        // DYNAMIC LEVERAGE & SIZING (User Request)
+                        // "Minimum 3x trade on lower" | "Higher leverage on high conviction"
+
+                        const BASE_COLLATERAL = 50; // $50 Risk per trade
+                        let targetLeverage = 3;     // Default: 3x (Low/Medium Conviction)
+
+                        // If High Conviction (>70%), Boost to 5x
+                        if (signal.confidence > 70) {
+                            targetLeverage = 5;
+                            console.log(`${GREEN}🚀 HIGH CONVICTION (${signal.confidence}%): Boosting Leverage to 5x${RESET}`);
+                        } else {
+                            console.log(`${YELLOW}⚡ STANDARD ENTRY (${signal.confidence}%): Using 3x Leverage${RESET}`);
+                        }
+
+                        const size = BASE_COLLATERAL * targetLeverage; // $150 or $250
 
                         try {
                             const res = await engine.executeOrder(
@@ -120,7 +135,7 @@ async function main() {
                                 signal.action as 'BUY' | 'SELL',
                                 size,
                                 price,
-                                1, // Leverage
+                                targetLeverage, // Leverage (Informational for generic engines, effectively Size/Collateral)
                                 false, // ReduceOnly
                                 {
                                     tp: parseFloat(tpPrice.toFixed(4))
@@ -129,7 +144,7 @@ async function main() {
                             );
 
                             if (res.success) {
-                                console.log(`${GREEN}✔ EXECUTION SUCCESS: ${res.txHash}${RESET}`);
+                                console.log(`${GREEN}✔ EXECUTION SUCCESS: ${res.txHash} (Size: $${size}, Lev: ${targetLeverage}x)${RESET}`);
 
                                 // Keep Lock for 30s to allow account poll to catch up
                                 setTimeout(() => pendingSymbols.delete(symbol), 30000);
@@ -142,7 +157,7 @@ async function main() {
                                         action: signal.action,
                                         price: res.filledPrice || price,
                                         size: res.filledSize || size,
-                                        leverage: 1,
+                                        leverage: targetLeverage, // SAVE ACTUAL LEVERAGE
                                         status: 'OPEN',
                                         txHash: res.txHash,
                                         strategy: 'AUTO_HEADLESS',
