@@ -335,24 +335,50 @@ async function main() {
                         }
                     }
 
-                    // 2. PROFIT TAKING (Active Market Close)
-                    // PnL % here is PRICE CHANGE % (approx), not ROE.
-                    // TP1: > 2.0% (was 1.5%) -> Close 50%
-                    if (pnlPct > 2.0) {
-                        const currentVal = Math.abs(size * currentPrice);
+                    // 2. PROFIT TAKING (ROE Based)
+                    // User Request: "14% ROE then let runner run"
 
-                        // Check if we already took TP1? 
-                        // We don't have state for that yet, but if size is small, we assume we did.
-                        // Or if PnL > 3.0%, we go to TP2.
+                    // A. Determine Leverage (from DB if possible, else estimate)
+                    const matchedTrade = await Trade.findOne({ symbol: symbol, status: 'OPEN' });
+                    const leverage = matchedTrade ? matchedTrade.leverage : 3; // Default 3x if missing
 
-                        // TP2: > 4.0% (was 3.0%) -> Close Remainder
-                        if (pnlPct > 4.0) {
-                            console.log(`${GREEN}💰 TP2 HIT: ${symbol} (+${pnlPct.toFixed(2)}%) - MARKET CLOSE (Remainder)${RESET}`);
+                    // B. Calculate ROE
+                    // ROE = (Unrealized PnL / Margin) * 100
+                    // Simplified: ROE = (Price Move %) * Leverage
+                    const roePct = pnlPct * leverage;
+
+                    // TP1: > 14% ROE -> Close 50%
+                    if (roePct > 14.0) {
+
+                        // Check if already partially closed
+                        if (matchedTrade && !matchedTrade.isPartiallyClosed) {
+                            console.log(`${GREEN}💰 TP1 HIT: ${symbol} (+${roePct.toFixed(2)}% ROE) - Securing 50%${RESET}`);
                             await engine.executeOrder(
                                 symbol,
                                 isLong ? 'SELL' : 'BUY',
-                                Math.abs(size * currentPrice), // Full Remaining Size
-                                currentPrice, // Used for size calc, but converted to Aggressive Limit IOC in engine
+                                Math.abs(size * currentPrice) * 0.5, // 50% Size
+                                currentPrice,
+                                1,
+                                true // ReduceOnly
+                            );
+
+                            // UPDATE DB FLAG
+                            if (matchedTrade) {
+                                matchedTrade.isPartiallyClosed = true;
+                                await matchedTrade.save();
+                                console.log(`${GREEN}✔ TP1 Flag Saved${RESET}`);
+                            }
+                        }
+
+                        // TP2: > 40% ROE (Moonbag / Runner)
+                        // Only close remainder if it really rips.
+                        else if (roePct > 40.0) {
+                            console.log(`${GREEN}🚀 TP2 MOONBAG: ${symbol} (+${roePct.toFixed(2)}% ROE) - Closing Remainder${RESET}`);
+                            await engine.executeOrder(
+                                symbol,
+                                isLong ? 'SELL' : 'BUY',
+                                Math.abs(size * currentPrice), // Full Remainder
+                                currentPrice,
                                 1,
                                 true // ReduceOnly
                             );
@@ -364,29 +390,11 @@ async function main() {
                                     status: 'CLOSED',
                                     exitPrice: currentPrice,
                                     exitTime: Date.now(),
-                                    exitReason: "TP2 (Market Close)",
-                                    pnlValue: uPnl, // Final PnL
+                                    exitReason: "TP2 (Moonbag ROE 40%)",
+                                    pnlValue: uPnl,
                                     pnlPercent: pnlPct
                                 }
                             );
-                        }
-                        // TP1: > 2.0%
-                        else if (currentVal > 40) {
-                            // Only take TP1 if size is significant (not dust)
-                            // and if we haven't taken it yet (proxy: size > 50% of original? Hard to know original)
-                            // For now, if > $40, we take half.
-                            console.log(`${GREEN}💰 TP1 HIT: ${symbol} (+${pnlPct.toFixed(2)}%) - MARKET CLOSE (50%)${RESET}`);
-                            await engine.executeOrder(
-                                symbol,
-                                isLong ? 'SELL' : 'BUY',
-                                Math.abs(size * currentPrice) * 0.5, // 50% Size
-                                currentPrice,
-                                1,
-                                true // ReduceOnly
-                            );
-
-                            // LOG PARTIAL
-                            console.log(`${GREEN}✔ TP1 (Market) Logged${RESET}`);
                         }
                     }
 
