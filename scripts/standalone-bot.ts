@@ -146,7 +146,6 @@ async function main() {
                                 price,
                                 targetLeverage, // Leverage (Informational for generic engines, effectively Size/Collateral)
                                 false, // ReduceOnly
-                                false, // ReduceOnly
                                 {
                                     // tp: parseFloat(tpPrice.toFixed(4)) 
                                     // DISABLE HARD TP to allow Layered Exits via Loop
