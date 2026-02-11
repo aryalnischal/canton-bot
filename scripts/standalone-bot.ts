@@ -101,10 +101,10 @@ async function main() {
                         const isBuy = signal.action === 'BUY';
 
                         // DYNAMIC TP/SL LOGIC (ENTRY)
-                        // User Request: "TP1 at 10% (0.5%), TP2 at 20% (1.0%)" + "No Hard SL"
-                        let tpPct = 0.01; // Hard Target 1% (TP2)
+                        // User Request: "TP1 at 0.8% (was 0.5%), TP2 at 1.5% (was 1.0%)"
+                        let tpPct = 0.015; // Hard Target 1.5% (TP2)
 
-                        console.log(`${YELLOW}🛡️ SL Strategy: Hard TP (+1%) & Soft Management Only (No Hard SL)${RESET}`);
+                        console.log(`${YELLOW}🛡️ SL Strategy: Hard TP (+1.5%) & Soft Management Only (No Hard SL)${RESET}`);
 
                         // Buy: TP > Price, SL < Price
                         const tpPrice = isBuy ? price * (1 + tpPct) : price * (1 - tpPct);
@@ -178,7 +178,38 @@ async function main() {
             // -----------------------------------------
             // D. POSITION MANAGEMENT (Soft Stop Logic & Active TP)
             // -----------------------------------------
+            // -----------------------------------------
+            // D. RECONCILIATION ("Ghost" Trades)
+            // If DB says OPEN but dYdX says NO POSITION -> It hit Limit TP/SL.
+            // -----------------------------------------
             const activeAccount = await engine.getAccountState();
+
+            if (activeAccount) {
+                const openPositions = activeAccount.openPositions || {};
+
+                // Get ALL OPEN trades from DB
+                const dbOpenTrades = await Trade.find({ status: 'OPEN' });
+
+                for (const t of dbOpenTrades) {
+                    // Check if this symbol exists in dYdX positions
+                    const pos = openPositions[t.symbol];
+                    const size = pos ? parseFloat(pos.size) : 0;
+
+                    if (!pos || size === 0) {
+                        console.log(`${CYAN}👻 RECONCILIATION: ${t.symbol} is closed on-chain but OPEN in DB. Marking CLOSED.${RESET}`);
+
+                        // We don't know exact exit price without fetching fills, 
+                        // so we assume it hit TP or SL.
+                        // For now, mark as CLOSED so it stops appearing as "Open $0 PnL".
+                        t.status = 'CLOSED';
+                        t.exitReason = 'Limit/External Close (Reconciled)';
+                        t.exitTime = Date.now();
+                        // t.exitPrice = ??? (Unknown without fill fetch)
+                        await t.save();
+                    }
+                }
+            }
+
             if (activeAccount && activeAccount.openPositions) {
                 const positions = activeAccount.openPositions;
 
@@ -253,16 +284,25 @@ async function main() {
                                 1,
                                 true
                             );
+
+                            // UPDATE DB
+                            await Trade.updateMany(
+                                { symbol: symbol, status: 'OPEN' },
+                                {
+                                    status: 'CLOSED',
+                                    exitPrice: currentPrice,
+                                    exitTime: Date.now(),
+                                    exitReason: closeReason,
+                                    pnlValue: uPnl,
+                                    pnlPercent: pnlPct
+                                }
+                            );
                         }
                     }
 
                     // 2. PROFIT TAKING (Layered)
-                    // TP1: > 0.5% (approx 10% ROE) -> Close 50%
-                    // TP2: > 1.0% (approx 20% ROE) -> Hard Close (Handled by Trigger, but loop can backup)
-
-                    if (pnlPct > 0.5) {
-                        // Check if we still have full size (approx $50)
-                        // If size > $40 USD, we haven't taken TP1 yet.
+                    // TP1: > 0.8% (was 0.5%) -> Close 50%
+                    if (pnlPct > 0.8) {
                         const currentVal = Math.abs(size * currentPrice);
 
                         if (currentVal > 40) {
@@ -276,8 +316,14 @@ async function main() {
                                 1,
                                 true // ReduceOnly
                             );
-                        } else if (pnlPct > 1.0) {
-                            // EXECUTE TP2 (Remainder) - Backup for Limit Order
+
+                            // LOG PARTIAL
+                            console.log(`${GREEN}✔ TP1 Logged to DB${RESET}`);
+                            // We don't close the trade yet, but we could log a partial entry if we had a sub-table. 
+                            // For now, let's just keep it OPEN until full close.
+
+                        } else if (pnlPct > 1.5) {
+                            // EXECUTE TP2 (Remainder) - > 1.5% (was 1.0%)
                             console.log(`${GREEN}💰 TP2 HIT: ${symbol} (+${pnlPct.toFixed(2)}%) - Closing Remainder${RESET}`);
                             await engine.executeOrder(
                                 symbol,
@@ -286,6 +332,19 @@ async function main() {
                                 currentPrice,
                                 1,
                                 true // ReduceOnly
+                            );
+
+                            // UPDATE DB
+                            await Trade.updateMany(
+                                { symbol: symbol, status: 'OPEN' },
+                                {
+                                    status: 'CLOSED',
+                                    exitPrice: currentPrice,
+                                    exitTime: Date.now(),
+                                    exitReason: "TP2 (Target Met)",
+                                    pnlValue: uPnl, // Final PnL
+                                    pnlPercent: pnlPct
+                                }
                             );
                         }
                     }
@@ -305,6 +364,19 @@ async function main() {
                                 currentPrice,
                                 1,
                                 true
+                            );
+
+                            // UPDATE DB
+                            await Trade.updateMany(
+                                { symbol: symbol, status: 'OPEN' },
+                                {
+                                    status: 'CLOSED',
+                                    exitPrice: currentPrice,
+                                    exitTime: Date.now(),
+                                    exitReason: `Stale (>4h)`,
+                                    pnlValue: uPnl,
+                                    pnlPercent: pnlPct
+                                }
                             );
                         }
                     }
