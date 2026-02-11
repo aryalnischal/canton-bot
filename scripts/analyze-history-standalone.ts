@@ -1,70 +1,67 @@
-import mongoose from 'mongoose';
 
-// Inline Schema to avoid Import Issues
+import * as mongoose from 'mongoose';
+import * as dotenv from 'dotenv';
+dotenv.config({ path: '.env.local' });
+
+const MONGODB_URI = process.env.MONGODB_URI;
+
+if (!MONGODB_URI) {
+    console.error("No MONGODB_URI in .env.local");
+    process.exit(1);
+}
+
+// Minimal Schema
 const TradeSchema = new mongoose.Schema({
-    id: { type: String, unique: true },
-    timestamp: { type: Number, default: Date.now },
-    symbol: { type: String, required: true },
-    action: { type: String, enum: ['BUY', 'SELL'], required: true },
-    price: { type: Number, required: true },
-    size: { type: Number, required: true },
-    leverage: { type: Number, required: true },
-    status: { type: String, enum: ['OPEN', 'CLOSED'], default: 'OPEN' },
-    exitPrice: { type: Number },
-    exitTime: { type: Number },
-    pnlValue: { type: Number },
-    pnlPercent: { type: Number },
-    exitReason: { type: String }
-}, {
-    timestamps: true
+    symbol: String,
+    status: String,
+    action: String,
+    size: Number,
+    price: Number,
+    exitPrice: Number,
+    timestamp: Number,
+    entryTime: Number,
+    exitTime: Number,
+    pnlValue: Number,
+    pnlPercent: Number,
+    exitReason: String,
+    strategy: String,
+    signalSnapshot: mongoose.Schema.Types.Mixed
 });
 
-const Trade = mongoose.models.Trade || mongoose.model('Trade', TradeSchema);
+// Fix: Check models on the connection or global
+const Trade = (mongoose.models && mongoose.models.Trade) || mongoose.model('Trade', TradeSchema);
 
-// Connect to DB
-const MONGODB_URI = process.env.MONGODB_URI || "mongodb://localhost:27017/canton-dydx";
-
-async function main() {
+async function run() {
     try {
-        await mongoose.connect(MONGODB_URI);
-        console.log("✅ Connected to MongoDB");
+        console.log("Connecting to Mongo...");
+        await mongoose.connect(MONGODB_URI!);
+        console.log("Connected.");
 
-        // Fetch ALL Trades
-        const trades = await Trade.find({}).sort({ timestamp: -1 });
+        // Fetch Closed Trades
+        const trades = await Trade.find({ status: 'CLOSED' }).sort({ exitTime: -1 }); // Recent first
 
-        console.log(`\n📊 Found ${trades.length} Total Trades:\n`);
-
-        let totalPnL = 0;
-        let wins = 0;
+        console.log(`\n📊 Found ${trades.length} Closed Trades:\n`);
 
         trades.forEach((t: any) => {
-            const entryTime = new Date(t.timestamp).toLocaleString();
-            const exitTime = t.exitTime ? new Date(t.exitTime).toLocaleString() : 'N/A';
-            const duration = t.exitTime ? ((t.exitTime - t.timestamp) / 1000 / 60).toFixed(1) + 'm' : 'N/A';
+            // Filter for XMR or TAO if needed, but let's show all recent
+            if (['XMR-USD', 'TAO-USD'].includes(t.symbol) || true) { // Show all for now to verify
+                const entryTime = new Date(t.entryTime || t.timestamp).toLocaleString();
+                const exitTime = t.exitTime ? new Date(t.exitTime).toLocaleString() : 'N/A';
+                const pnl = t.pnlValue || 0;
+                const pnlPct = t.pnlPercent || 0;
+                const color = pnl >= 0 ? '🟢' : '🔴';
 
-            const pnl = t.pnlValue || 0;
-            const pnlPct = t.pnlPercent || 0;
-            const size = t.size || 0;
-
-            totalPnL += pnl;
-            if (pnl > 0) wins++;
-
-            const color = pnl >= 0 ? '🟢' : '🔴';
-
-            console.log(`${color} ${t.symbol} (${t.action})`);
-            console.log(`   Entry: $${t.price} @ ${entryTime}`);
-            console.log(`   Exit : $${t.exitPrice} @ ${exitTime} (${duration})`);
-            console.log(`   Size : $${size.toFixed(2)}`);
-            console.log(`   PnL  : $${pnl.toFixed(2)} (${pnlPct.toFixed(2)}%)`);
-            console.log(`   Reason: ${t.exitReason || 'Manual/Unknown'}`);
-            console.log('------------------------------------------------');
+                console.log(`${color} ${t.symbol} (${t.action})`);
+                console.log(`   Entry : $${t.price} @ ${entryTime}`);
+                console.log(`   Exit  : $${t.exitPrice} @ ${exitTime}`);
+                console.log(`   PnL   : $${pnl.toFixed(2)} (${pnlPct.toFixed(2)}%)`);
+                console.log(`   Reason: ${t.exitReason || 'Manual/Unknown'}`);
+                if (t.signalSnapshot && t.signalSnapshot.reasons) {
+                    console.log(`   Signal: ${t.signalSnapshot.reasons.join(', ')}`);
+                }
+                console.log('------------------------------------------------');
+            }
         });
-
-        console.log(`\n📈 SUMMARY:`);
-        console.log(`Total Trades: ${trades.length}`);
-        console.log(`Wins: ${wins} / Losses: ${trades.length - wins}`);
-        console.log(`Win Rate: ${trades.length > 0 ? ((wins / trades.length) * 100).toFixed(1) : 0}%`);
-        console.log(`Net PnL: $${totalPnL.toFixed(2)}`);
 
     } catch (e) {
         console.error(e);
@@ -73,4 +70,4 @@ async function main() {
     }
 }
 
-main();
+run();

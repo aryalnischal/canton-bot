@@ -147,9 +147,13 @@ async function main() {
                                 targetLeverage, // Leverage (Informational for generic engines, effectively Size/Collateral)
                                 false, // ReduceOnly
                                 {
-                                    // tp: parseFloat(tpPrice.toFixed(4)) 
-                                    // DISABLE HARD TP to allow Layered Exits via Loop
-                                    // sl: undefined (No Hard SL)
+                                    // HARD STOP LOSS (Safety Net)
+                                    // -10% Max Risk (Catastrophic Guard)
+                                    sl: isBuy
+                                        ? parseFloat((price * 0.90).toFixed(4))
+                                        : parseFloat((price * 1.10).toFixed(4)),
+
+                                    // tp: undefined (We use Market Close logic)
                                 }
                             );
 
