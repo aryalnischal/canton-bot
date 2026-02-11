@@ -63,9 +63,14 @@ export class ScannerService {
         // 1. Get All Markets
         const response = await this.indexer.markets.getPerpetualMarkets();
         const markets = response.markets;
-        const marketKeys = Object.keys(markets).filter(k => k.endsWith('USD'));
+        const marketKeys = Object.keys(markets).filter(k =>
+            k.endsWith('USD') &&
+            !k.includes(',') &&
+            !k.includes('0x') &&
+            !k.includes('prediction')
+        );
 
-        console.log(`[SCANNER] Found ${marketKeys.length} USD markets.`);
+        console.log(`[SCANNER] Found ${marketKeys.length} Valid USD markets.`);
         if (marketKeys.length > 0) {
             console.log("[DEBUG] Market Keys:", Object.keys(markets[marketKeys[0]]));
         }
