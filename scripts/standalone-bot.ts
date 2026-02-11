@@ -326,29 +326,28 @@ async function main() {
                                     exitReason: closeReason,
                                     pnlValue: uPnl,
                                     pnlPercent: pnlPct
-                                }
                             );
                         }
                     }
 
-                    // 2. PROFIT TAKING (Layered)
+                    // 2. PROFIT TAKING (Active Market Close)
                     // PnL % here is PRICE CHANGE % (approx), not ROE.
-                    // TP1: > 1.5% (was 0.8%) -> Close 50%
-                    if (pnlPct > 1.5) {
+                    // TP1: > 2.0% (was 1.5%) -> Close 50%
+                    if (pnlPct > 2.0) {
                         const currentVal = Math.abs(size * currentPrice);
 
                         // Check if we already took TP1? 
                         // We don't have state for that yet, but if size is small, we assume we did.
                         // Or if PnL > 3.0%, we go to TP2.
 
-                        // TP2: > 3.0% (was 1.5%) -> Close Remainder
-                        if (pnlPct > 3.0) {
-                            console.log(`${GREEN}💰 TP2 HIT: ${symbol} (+${pnlPct.toFixed(2)}%) - Closing Remainder${RESET}`);
+                        // TP2: > 4.0% (was 3.0%) -> Close Remainder
+                        if (pnlPct > 4.0) {
+                            console.log(`${GREEN}💰 TP2 HIT: ${symbol} (+${pnlPct.toFixed(2)}%) - MARKET CLOSE (Remainder)${RESET}`);
                             await engine.executeOrder(
                                 symbol,
                                 isLong ? 'SELL' : 'BUY',
                                 Math.abs(size * currentPrice), // Full Remaining Size
-                                currentPrice,
+                                currentPrice, // Used for size calc, but converted to Aggressive Limit IOC in engine
                                 1,
                                 true // ReduceOnly
                             );
@@ -360,18 +359,18 @@ async function main() {
                                     status: 'CLOSED',
                                     exitPrice: currentPrice,
                                     exitTime: Date.now(),
-                                    exitReason: "TP2 (Target Met)",
+                                    exitReason: "TP2 (Market Close)",
                                     pnlValue: uPnl, // Final PnL
                                     pnlPercent: pnlPct
                                 }
                             );
                         }
-                        // TP1: > 1.5%
+                        // TP1: > 2.0%
                         else if (currentVal > 40) {
                             // Only take TP1 if size is significant (not dust)
                             // and if we haven't taken it yet (proxy: size > 50% of original? Hard to know original)
                             // For now, if > $40, we take half.
-                            console.log(`${GREEN}💰 TP1 HIT: ${symbol} (+${pnlPct.toFixed(2)}%) - Securing 50%${RESET}`);
+                            console.log(`${GREEN}💰 TP1 HIT: ${symbol} (+${pnlPct.toFixed(2)}%) - MARKET CLOSE (50%)${RESET}`);
                             await engine.executeOrder(
                                 symbol,
                                 isLong ? 'SELL' : 'BUY',
@@ -382,7 +381,7 @@ async function main() {
                             );
 
                             // LOG PARTIAL
-                            console.log(`${GREEN}✔ TP1 Logged to DB${RESET}`);
+                            console.log(`${GREEN}✔ TP1 (Market) Logged${RESET}`);
                         }
                     }
 
