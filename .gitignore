@@ -48,3 +48,5 @@ node
 .next/
 node_modules/
 mongodb_data/
+
+.idea

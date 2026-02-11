@@ -1,0 +1,34 @@
+services:
+  central_frontend:
+#    image: documee7/development:central_frontend
+    container_name: canton_bot
+    build:
+      context: .
+      dockerfile: prod.Dockerfile
+      args:
+        - NEXT_PUBLIC_ENV=development
+        - NEXT_PUBLIC_BASE_URL=https://app.development.documee.ai
+        - NEXT_PUBLIC_CENTRAL_FRONTEND_REDIRECT_URL=https://app.development.documee.ai
+        - NEXT_PUBLIC_USER_REDIRECT_BASE_URL=https://documee.ai
+        - NEXT_PUBLIC_CENTRAL_STRIPE_PUBLISHABLE_KEY=pk_test_51RPyww2KXa6OeB3whc0QJG39tvDANCYftH799pSPfqO8hlc20YNzlb0LG5iofXpb0Oi8qhFD8Gv30HEwXzWnBJSC00tPLZbvWt
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_ENV=development
+      - NEXT_PUBLIC_BASE_URL=https://app.development.documee.ai
+      - NEXT_PUBLIC_CENTRAL_FRONTEND_REDIRECT_URL=https://app.development.documee.ai
+      - NEXT_PUBLIC_USER_REDIRECT_BASE_URL=https://documee.ai
+      - NEXT_PUBLIC_CENTRAL_STRIPE_PUBLISHABLE_KEY=pk_test_51RPyww2KXa6OeB3whc0QJG39tvDANCYftH799pSPfqO8hlc20YNzlb0LG5iofXpb0Oi8qhFD8Gv30HEwXzWnBJSC00tPLZbvWt
+    volumes:
+      - .:/app
+      - /app/node_modules
+    tty: true
+    networks:
+      - documee_central_network
+
+networks:
+  canton_bot_network:
+    external: true
+
+volumes:
+  canton_bot_node_modules:
