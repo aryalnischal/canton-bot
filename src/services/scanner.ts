@@ -30,6 +30,8 @@ async function getOrderbookImbalance(client: IndexerClient, symbol: string): Pro
 
 export class ScannerService {
     private indexer: IndexerClient;
+    private scanPromise: Promise<{ markets: any[], signals: any[] }> | null = null;
+    private lastResult: { markets: any[], signals: any[] } | null = null;
 
     constructor() {
         const networkConfig = process.env.DYDX_NETWORK === 'mainnet' ? Network.mainnet() : Network.testnet();
@@ -37,6 +39,25 @@ export class ScannerService {
     }
 
     public async scanMarkets(limit: number = 10): Promise<{ markets: any[], signals: any[] }> {
+        // 0. LOCKING MECHANISM (Prevent Overlap)
+        if (this.scanPromise) {
+            console.warn("[SCANNER] Scan already in progress. Joining existing request...");
+            return this.scanPromise;
+        }
+
+        // 1. Start Scan
+        this.scanPromise = (async () => {
+            try {
+                return await this._executeScan();
+            } finally {
+                this.scanPromise = null; // Release Lock
+            }
+        })();
+
+        return this.scanPromise;
+    }
+
+    private async _executeScan(): Promise<{ markets: any[], signals: any[] }> {
         console.log("[SCANNER] Scanning dYdX v4 Markets...");
 
         // 1. Get All Markets
@@ -53,23 +74,23 @@ export class ScannerService {
 
         // 2. Fetch Candles for Top Assets
         // 2. SELECTION LOGIC (Hybrid: Volume + Volatility)
-        // A. Volume Leaders (Top 10)
+        // A. Volume Leaders (Top 15)
         const sortedByVol = [...marketKeys].sort((a, b) => {
             const volA = parseFloat(markets[a].volume24H || "0");
             const volB = parseFloat(markets[b].volume24H || "0");
             return volB - volA;
         });
-        const volumeTargets = sortedByVol.slice(0, 10);
+        const volumeTargets = sortedByVol.slice(0, 15);
 
-        // B. Volatility Movers (Top 5 from remainder)
-        const remainder = sortedByVol.slice(10);
+        // B. Volatility Movers (Top 10 from remainder)
+        const remainder = sortedByVol.slice(15);
         const sortedByVolat = remainder.sort((a, b) => {
             // Use Absolute Change to find biggest movers (Up or Down)
             const changeA = Math.abs(parseFloat(markets[a].priceChange24H || "0"));
             const changeB = Math.abs(parseFloat(markets[b].priceChange24H || "0"));
             return changeB - changeA;
         });
-        const volatilityTargets = sortedByVolat.slice(0, 5);
+        const volatilityTargets = sortedByVolat.slice(0, 10);
 
         // Combine
         const targets = [...volumeTargets, ...volatilityTargets];
@@ -80,25 +101,50 @@ export class ScannerService {
 
         for (const symbol of targets) {
             try {
-                // PARALLEL FETCHING
-                const start = Date.now();
-                const [candles, imbalance, maxPain] = await Promise.all([
-                    (this.indexer as any).markets.getPerpetualMarketCandles(
-                        symbol,
-                        '15MINS',
-                        undefined,
-                        undefined,
-                        50
-                    ),
-                    getOrderbookImbalance(this.indexer, symbol),
-                    calculateMaxPain(symbol).catch(() => 0)
-                ]);
+                // RETRY LOGIC for 429s (Exponential Backoff up to 16s)
+                let candles: any, imbalance: any, maxPain: any;
+                let attempts = 0;
+                let success = false;
+
+                while (!success && attempts < 3) {
+                    try {
+                        // SEQUENTIAL FETCHING (Reduce Burst)
+                        // 1. Candles
+                        candles = await (this.indexer as any).markets.getPerpetualMarketCandles(
+                            symbol, '15MINS', undefined, undefined, 50
+                        );
+                        await new Promise(r => setTimeout(r, 200)); // Short break
+
+                        // 2. Orderbook
+                        imbalance = await getOrderbookImbalance(this.indexer, symbol);
+
+                        // 3. Max Pain (External API - No delay needed for dYdX)
+                        maxPain = await calculateMaxPain(symbol).catch(() => 0);
+
+                        success = true;
+                    } catch (netErr: any) {
+                        attempts++;
+                        if (netErr?.response?.status === 429) {
+                            const backoff = 2000 * Math.pow(2, attempts); // 4s, 8s, 16s
+                            console.warn(`[SCANNER] 429 Rate Limit on ${symbol}. Retrying in ${backoff}ms...`);
+                            await new Promise(r => setTimeout(r, backoff));
+                        } else {
+                            console.warn(`[SCANNER] Error fetching ${symbol}:`, netErr.message);
+                            if (attempts >= 3) throw netErr;
+                            await new Promise(r => setTimeout(r, 1000));
+                        }
+                    }
+                }
+
+                if (!success) continue;
 
                 // Debug Candle Count
                 if (!candles || !candles.candles || candles.candles.length === 0) {
                     console.log(`[SCANNER] ${symbol}: No candles returned.`);
                     continue;
                 }
+
+                // ... (Normalization & Logic remains the same)
 
                 // Normalize Candles
                 const normalizedCandles = candles.candles.map((c: any) => ({
@@ -165,11 +211,11 @@ export class ScannerService {
 
                 console.log(`[SCANNER] ${symbol} Score: ${consensus.score.toFixed(3)} (Conf: ${consensus.confidence}%)`);
 
-                // Delay to prevent 429 (Rate Limit) - Increased to 2s
-                await new Promise(r => setTimeout(r, 2000));
+                // Delay to prevent 429 (Rate Limit) - Increased to 1000ms (Very Safe)
+                await new Promise(r => setTimeout(r, 1000));
 
-            } catch (err) {
-                console.warn(`[SCANNER] Failed to fetch ${symbol}:`, err);
+            } catch (err: any) {
+                console.warn(`[SCANNER] Failed to fetch ${symbol}:`, err.message || err);
             }
         }
 
@@ -179,6 +225,8 @@ export class ScannerService {
             .filter(r => Math.abs(r.score) > 0.4)
             .sort((a, b) => b.score - a.score);
 
-        return { markets: results, signals };
+        const payload = { markets: results, signals };
+        this.lastResult = payload;
+        return payload;
     }
 }

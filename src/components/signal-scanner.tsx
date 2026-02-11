@@ -65,7 +65,7 @@ export function SignalScanner() {
                 body: JSON.stringify({
                     symbol: bsPosition.coin + "-USD",
                     action,
-                    price: 0, // Market
+                    price: parseFloat(bsPosition.entryPx), // Use Entry Price for Size Calc
                     size: Math.abs(size * parseFloat(bsPosition.entryPx)), // USD Value
                     leverage: 1,
                     reduceOnly: true

@@ -131,15 +131,32 @@ export class DydxExecutionService {
 
             console.log(`[DYDX] Placing ${action} ${size} ${symbol} (Reduce: ${reduceOnly})...`);
 
+            // AGGRESSIVE CLOSE LOGIC
+            // If Reducing Position, use LIMIT IOC with 5% Slippage to guarantee fill (User Request)
+            let orderType = OrderType.MARKET;
+            let price = 0;
+            let tif = OrderTimeInForce.IOC;
+
+            if (reduceOnly) {
+                orderType = OrderType.LIMIT;
+                // Buy: Price * 1.05 (Willing to pay more to close Short)
+                // Sell: Price * 0.95 (Willing to sell less to close Long)
+                price = action === 'BUY'
+                    ? parseFloat((currentPrice * 1.05).toFixed(4))
+                    : parseFloat((currentPrice * 0.95).toFixed(4));
+
+                console.log(`[DYDX] Aggressive Close: LIMIT IOC at ${price} (5% Slippage)`);
+            }
+
             const tx = await this.client.placeOrder(
                 this.subaccount,
                 symbol,
-                OrderType.MARKET,
+                orderType,
                 side,
-                0, // Price (0 for market order)
+                price,
                 size,
                 clientId,
-                OrderTimeInForce.IOC, // Immediate or Cancel (Market)
+                tif,
                 0, // GoodTilTimeSeconds (0 for IOC)
                 OrderExecution.DEFAULT,
                 false, // postOnly

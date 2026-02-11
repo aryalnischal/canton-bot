@@ -101,17 +101,16 @@ async function main() {
                         const isBuy = signal.action === 'BUY';
 
                         // DYNAMIC TP/SL LOGIC (ENTRY)
-                        // User Request: "Don't put SL right away" -> WIDE Hard SL
-                        // We rely on the Loop to "Soft Close" if thesis fails.
-                        let tpPct = 0.15; // Wide Target (Let it run)
-                        let slPct = 0.10; // Emergency Stop only (Catastrophe)
+                        // User Request: "TP1 at 10% (0.5%), TP2 at 20% (1.0%)" + "No Hard SL"
+                        let tpPct = 0.01; // Hard Target 1% (TP2)
 
-                        console.log(`${YELLOW}🛡️ SL Strategy: Wide Hard Stop (-10%) + Active Soft Management${RESET}`);
+                        console.log(`${YELLOW}🛡️ SL Strategy: Hard TP (+1%) & Soft Management Only (No Hard SL)${RESET}`);
 
                         // Buy: TP > Price, SL < Price
-                        // Sell: TP < Price, SL > Price
                         const tpPrice = isBuy ? price * (1 + tpPct) : price * (1 - tpPct);
-                        const slPrice = isBuy ? price * (1 - slPct) : price * (1 + slPct);
+
+                        // We do NOT place a Hard SL (User request). 
+                        // We rely on the Loop's Soft SL (-5%) to close if needed.
 
                         const size = 50; // USD Size
 
@@ -124,8 +123,8 @@ async function main() {
                                 1, // Leverage
                                 false, // ReduceOnly
                                 {
-                                    tp: parseFloat(tpPrice.toFixed(4)),
-                                    sl: parseFloat(slPrice.toFixed(4))
+                                    tp: parseFloat(tpPrice.toFixed(4))
+                                    // sl: undefined (No Hard SL)
                                 }
                             );
 
@@ -147,7 +146,6 @@ async function main() {
                                         status: 'OPEN',
                                         txHash: res.txHash,
                                         strategy: 'AUTO_HEADLESS',
-                                        sl: parseFloat(slPrice.toFixed(4)),
                                         tp: parseFloat(tpPrice.toFixed(4)),
                                         entryTime: Date.now(),
                                         // SNAPSHOT
@@ -185,7 +183,7 @@ async function main() {
                 const positions = activeAccount.openPositions;
 
                 // OPTIMIZATION: Scan once if ANY position needs attention
-                // Check if any position > 1.5% or < -3.0%
+                // Check if any position > 0.5% (TP1) or < -5.0% (Soft SL)
                 let needScan = false;
                 for (const key in positions) {
                     const p = positions[key];
@@ -196,7 +194,7 @@ async function main() {
                     const cost = Math.abs(size * entry);
                     const pnlPct = (uPnl / cost) * 100;
 
-                    if (pnlPct < -3.0 || pnlPct > 1.5) { // Lowered TP Trigger to 1.5% for "Secure Profit"
+                    if (pnlPct < -5.0 || pnlPct > 0.5) { // Active Management Zone
                         needScan = true;
                         break;
                     }
@@ -224,15 +222,15 @@ async function main() {
 
                     console.log(`[MANAGE] ${symbol} (${side}) PnL: ${pnlPct.toFixed(2)}% ($${uPnl.toFixed(2)})`);
 
-                    // 1. SOFT STOP CHECK (-3% Threshold)
-                    if (pnlPct < -3.0) {
+                    // 1. SOFT STOP CHECK (-5% Threshold - WIDENED)
+                    if (pnlPct < -5.0) {
                         const match = freshSignals.find((s: any) => s.symbol === symbol);
                         let shouldClose = false;
                         let closeReason = "";
 
                         if (!match) {
                             shouldClose = true;
-                            closeReason = "Soft Stop: Signal Lost & Losing";
+                            closeReason = "Soft Stop: Signal Lost & Losing (>5%)";
                         } else {
                             if (match.action !== side && match.confidence > 20) {
                                 shouldClose = true;
@@ -241,7 +239,7 @@ async function main() {
                                 shouldClose = true;
                                 closeReason = `Soft Stop: Thesis Weakened (${match.confidence}%)`;
                             } else {
-                                console.log(`${YELLOW}🛡️ HOLDING ${symbol} despite -3% (Thesis Strong: ${match.confidence}%)${RESET}`);
+                                console.log(`${YELLOW}🛡️ HOLDING ${symbol} despite -5% (Thesis Strong: ${match.confidence}%)${RESET}`);
                             }
                         }
 
@@ -258,40 +256,36 @@ async function main() {
                         }
                     }
 
-                    // 2. PROFIT TAKING (Active Management)
-                    // Rule A: If PnL > 4.0%, Take Profit if Thesis Fades OR just to secure bag.
-                    // Rule B: If PnL > 1.5% (Scalp), Take Profit if Signal Reverses.
-                    if (pnlPct > 1.5) {
-                        const match = freshSignals.find((s: any) => s.symbol === symbol);
+                    // 2. PROFIT TAKING (Layered)
+                    // TP1: > 0.5% (approx 10% ROE) -> Close 50%
+                    // TP2: > 1.0% (approx 20% ROE) -> Hard Close (Handled by Trigger, but loop can backup)
 
-                        let takeProfit = false;
-                        let reason = "";
+                    if (pnlPct > 0.5) {
+                        // Check if we still have full size (approx $50)
+                        // If size > $40 USD, we haven't taken TP1 yet.
+                        const currentVal = Math.abs(size * currentPrice);
 
-                        if (pnlPct > 4.0) {
-                            // Strong Profit: Close if signal isn't 'BUY' (for Long) or 'SELL' (for Short)
-                            // OR if we just want to bank it. Let's start with Signal Fade.
-                            if (!match || match.action !== side) {
-                                takeProfit = true;
-                                reason = `Target Hit (+${pnlPct.toFixed(2)}%) & Signal Faded`;
-                            }
-                        } else {
-                            // Moderate Profit (1.5% - 4.0%)
-                            // Only close if signal actively opposes us
-                            if (match && match.action !== side && match.confidence > 40) {
-                                takeProfit = true;
-                                reason = `Scalp Exit (+${pnlPct.toFixed(2)}%) - Signal Reversal`;
-                            }
-                        }
-
-                        if (takeProfit) {
-                            console.log(`${GREEN}💰 TAKING PROFIT: ${symbol} (${reason})${RESET}`);
+                        if (currentVal > 40) {
+                            // EXECUTE TP1 (50%)
+                            console.log(`${GREEN}💰 TP1 HIT: ${symbol} (+${pnlPct.toFixed(2)}%) - Securing 50%${RESET}`);
                             await engine.executeOrder(
                                 symbol,
                                 isLong ? 'SELL' : 'BUY',
-                                Math.abs(size * currentPrice),
+                                Math.abs(size * currentPrice) * 0.5, // 50% Size
                                 currentPrice,
                                 1,
-                                true
+                                true // ReduceOnly
+                            );
+                        } else if (pnlPct > 1.0) {
+                            // EXECUTE TP2 (Remainder) - Backup for Limit Order
+                            console.log(`${GREEN}💰 TP2 HIT: ${symbol} (+${pnlPct.toFixed(2)}%) - Closing Remainder${RESET}`);
+                            await engine.executeOrder(
+                                symbol,
+                                isLong ? 'SELL' : 'BUY',
+                                Math.abs(size * currentPrice), // Full Remaining Size
+                                currentPrice,
+                                1,
+                                true // ReduceOnly
                             );
                         }
                     }
