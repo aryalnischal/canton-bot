@@ -326,6 +326,7 @@ async function main() {
                                     exitReason: closeReason,
                                     pnlValue: uPnl,
                                     pnlPercent: pnlPct
+                                }
                             );
                         }
                     }
