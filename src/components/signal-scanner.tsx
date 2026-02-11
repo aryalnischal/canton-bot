@@ -13,6 +13,15 @@ interface Signal {
 }
 
 export function SignalScanner() {
+    // REAL-TIME WALLET STATE
+    const [equity, setEquity] = useState(0);
+    const [activePositions, setActivePositions] = useState<any[]>([]);
+    const [walletData, setWalletData] = useState<any>(null);
+
+    // SIGNALS
+    const [signals, setSignals] = useState<Signal[]>([]);
+    const [isLoading, setIsLoading] = useState(true);
+
     // PNL STATE
     const [pnlData, setPnlData] = useState<any>({ totalPnl: 0, pnl24h: 0, pnl48h: 0, winRate24h: 0 });
 
