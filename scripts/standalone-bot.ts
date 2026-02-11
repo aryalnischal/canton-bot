@@ -115,19 +115,25 @@ async function main() {
 
                         // DYNAMIC LEVERAGE & SIZING (User Request)
                         // "Minimum 3x trade on lower" | "Higher leverage on high conviction"
+                        // Updated: >85% (15x), >77% (10x)
 
                         const BASE_COLLATERAL = 50; // $50 Risk per trade
                         let targetLeverage = 3;     // Default: 3x (Low/Medium Conviction)
 
-                        // If High Conviction (>70%), Boost to 5x
-                        if (signal.confidence > 70) {
+                        if (signal.confidence > 85) {
+                            targetLeverage = 15;
+                            console.log(`${GREEN}🚀🚀 MAX CONVICTION (${signal.confidence}%): Boosting Leverage to 15x${RESET}`);
+                        } else if (signal.confidence > 77) {
+                            targetLeverage = 10;
+                            console.log(`${GREEN}🚀 HIGH CONVICTION (${signal.confidence}%): Boosting Leverage to 10x${RESET}`);
+                        } else if (signal.confidence > 70) {
                             targetLeverage = 5;
-                            console.log(`${GREEN}🚀 HIGH CONVICTION (${signal.confidence}%): Boosting Leverage to 5x${RESET}`);
+                            console.log(`${GREEN}⚡ STRONG CONVICTION (${signal.confidence}%): Boosting Leverage to 5x${RESET}`);
                         } else {
                             console.log(`${YELLOW}⚡ STANDARD ENTRY (${signal.confidence}%): Using 3x Leverage${RESET}`);
                         }
 
-                        const size = BASE_COLLATERAL * targetLeverage; // $150 or $250
+                        const size = BASE_COLLATERAL * targetLeverage; // $150 to $750
 
                         try {
                             const res = await engine.executeOrder(
