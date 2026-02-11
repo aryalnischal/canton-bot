@@ -146,8 +146,10 @@ async function main() {
                                 price,
                                 targetLeverage, // Leverage (Informational for generic engines, effectively Size/Collateral)
                                 false, // ReduceOnly
+                                false, // ReduceOnly
                                 {
-                                    tp: parseFloat(tpPrice.toFixed(4))
+                                    // tp: parseFloat(tpPrice.toFixed(4)) 
+                                    // DISABLE HARD TP to allow Layered Exits via Loop
                                     // sl: undefined (No Hard SL)
                                 }
                             );
@@ -325,29 +327,17 @@ async function main() {
                     }
 
                     // 2. PROFIT TAKING (Layered)
-                    // TP1: > 0.8% (was 0.5%) -> Close 50%
-                    if (pnlPct > 0.8) {
+                    // PnL % here is PRICE CHANGE % (approx), not ROE.
+                    // TP1: > 1.5% (was 0.8%) -> Close 50%
+                    if (pnlPct > 1.5) {
                         const currentVal = Math.abs(size * currentPrice);
 
-                        if (currentVal > 40) {
-                            // EXECUTE TP1 (50%)
-                            console.log(`${GREEN}💰 TP1 HIT: ${symbol} (+${pnlPct.toFixed(2)}%) - Securing 50%${RESET}`);
-                            await engine.executeOrder(
-                                symbol,
-                                isLong ? 'SELL' : 'BUY',
-                                Math.abs(size * currentPrice) * 0.5, // 50% Size
-                                currentPrice,
-                                1,
-                                true // ReduceOnly
-                            );
+                        // Check if we already took TP1? 
+                        // We don't have state for that yet, but if size is small, we assume we did.
+                        // Or if PnL > 3.0%, we go to TP2.
 
-                            // LOG PARTIAL
-                            console.log(`${GREEN}✔ TP1 Logged to DB${RESET}`);
-                            // We don't close the trade yet, but we could log a partial entry if we had a sub-table. 
-                            // For now, let's just keep it OPEN until full close.
-
-                        } else if (pnlPct > 1.5) {
-                            // EXECUTE TP2 (Remainder) - > 1.5% (was 1.0%)
+                        // TP2: > 3.0% (was 1.5%) -> Close Remainder
+                        if (pnlPct > 3.0) {
                             console.log(`${GREEN}💰 TP2 HIT: ${symbol} (+${pnlPct.toFixed(2)}%) - Closing Remainder${RESET}`);
                             await engine.executeOrder(
                                 symbol,
@@ -370,6 +360,24 @@ async function main() {
                                     pnlPercent: pnlPct
                                 }
                             );
+                        }
+                        // TP1: > 1.5%
+                        else if (currentVal > 40) {
+                            // Only take TP1 if size is significant (not dust)
+                            // and if we haven't taken it yet (proxy: size > 50% of original? Hard to know original)
+                            // For now, if > $40, we take half.
+                            console.log(`${GREEN}💰 TP1 HIT: ${symbol} (+${pnlPct.toFixed(2)}%) - Securing 50%${RESET}`);
+                            await engine.executeOrder(
+                                symbol,
+                                isLong ? 'SELL' : 'BUY',
+                                Math.abs(size * currentPrice) * 0.5, // 50% Size
+                                currentPrice,
+                                1,
+                                true // ReduceOnly
+                            );
+
+                            // LOG PARTIAL
+                            console.log(`${GREEN}✔ TP1 Logged to DB${RESET}`);
                         }
                     }
 
