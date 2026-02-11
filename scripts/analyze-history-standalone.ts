@@ -25,6 +25,7 @@ const TradeSchema = new mongoose.Schema({
     pnlPercent: Number,
     exitReason: String,
     strategy: String,
+    leverage: Number,
     signalSnapshot: mongoose.Schema.Types.Mixed
 });
 
@@ -37,30 +38,33 @@ async function run() {
         await mongoose.connect(MONGODB_URI!);
         console.log("Connected.");
 
-        // Fetch Closed Trades
-        const trades = await Trade.find({ status: 'CLOSED' }).sort({ exitTime: -1 }); // Recent first
+        // Fetch Trades for APT-USD
+        const trades = await Trade.find({ symbol: 'APT-USD' }).sort({ entryTime: -1 });
 
-        console.log(`\n📊 Found ${trades.length} Closed Trades:\n`);
+        console.log(`\n📊 Found ${trades.length} APT-USD Trades:\n`);
 
         trades.forEach((t: any) => {
-            // Filter for XMR or TAO if needed, but let's show all recent
-            if (['XMR-USD', 'TAO-USD'].includes(t.symbol) || true) { // Show all for now to verify
-                const entryTime = new Date(t.entryTime || t.timestamp).toLocaleString();
-                const exitTime = t.exitTime ? new Date(t.exitTime).toLocaleString() : 'N/A';
-                const pnl = t.pnlValue || 0;
-                const pnlPct = t.pnlPercent || 0;
-                const color = pnl >= 0 ? '🟢' : '🔴';
+            const entryTime = new Date(t.entryTime || t.timestamp).toLocaleString();
+            const exitTime = t.exitTime ? new Date(t.exitTime).toLocaleString() : 'Open';
+            const pnl = t.pnlValue || 0;
+            const pnlPct = t.pnlPercent || 0;
+            const color = pnl >= 0 ? '🟢' : '🔴';
 
-                console.log(`${color} ${t.symbol} (${t.action})`);
-                console.log(`   Entry : $${t.price} @ ${entryTime}`);
-                console.log(`   Exit  : $${t.exitPrice} @ ${exitTime}`);
-                console.log(`   PnL   : $${pnl.toFixed(2)} (${pnlPct.toFixed(2)}%)`);
-                console.log(`   Reason: ${t.exitReason || 'Manual/Unknown'}`);
-                if (t.signalSnapshot && t.signalSnapshot.reasons) {
-                    console.log(`   Signal: ${t.signalSnapshot.reasons.join(', ')}`);
+            console.log(`${color} ${t.symbol} (${t.action}) - ${t.status}`);
+            console.log(`   Entry : $${t.price} @ ${entryTime}`);
+            console.log(`   Lev   : ${t.leverage}x`);
+            console.log(`   Strategy: ${t.strategy}`);
+
+            if (t.signalSnapshot) {
+                console.log(`   Snapshot Score: ${t.signalSnapshot.score}`);
+                console.log(`   Snapshot Conf : ${t.signalSnapshot.confidence}%`);
+                if (t.signalSnapshot.reasons) {
+                    console.log(`   Signal Reasons: ${t.signalSnapshot.reasons.join(', ')}`);
                 }
-                console.log('------------------------------------------------');
+            } else {
+                console.log(`   Snapshot: N/A`);
             }
+            console.log('------------------------------------------------');
         });
 
     } catch (e) {
