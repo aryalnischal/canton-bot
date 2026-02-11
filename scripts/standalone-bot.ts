@@ -114,18 +114,21 @@ async function main() {
 
 
                         // DYNAMIC LEVERAGE & SIZING (User Request)
-                        // "Minimum 3x trade on lower" | "Higher leverage on high conviction"
-                        // Updated: >85% (15x), >77% (10x)
+                        // "Most coins max 10x" -> Adjusted Tiers:
+                        // > 85% -> 10x
+                        // > 77% -> 8x
+                        // > 70% -> 5x
+                        // > 45% -> 3x (Standard)
 
                         const BASE_COLLATERAL = 50; // $50 Risk per trade
                         let targetLeverage = 3;     // Default: 3x (Low/Medium Conviction)
 
                         if (signal.confidence > 85) {
-                            targetLeverage = 15;
-                            console.log(`${GREEN}🚀🚀 MAX CONVICTION (${signal.confidence}%): Boosting Leverage to 15x${RESET}`);
-                        } else if (signal.confidence > 77) {
                             targetLeverage = 10;
-                            console.log(`${GREEN}🚀 HIGH CONVICTION (${signal.confidence}%): Boosting Leverage to 10x${RESET}`);
+                            console.log(`${GREEN}🚀🚀 MAX CONVICTION (${signal.confidence}%): Boosting Leverage to 10x${RESET}`);
+                        } else if (signal.confidence > 77) {
+                            targetLeverage = 8;
+                            console.log(`${GREEN}🚀 HIGH CONVICTION (${signal.confidence}%): Boosting Leverage to 8x${RESET}`);
                         } else if (signal.confidence > 70) {
                             targetLeverage = 5;
                             console.log(`${GREEN}⚡ STRONG CONVICTION (${signal.confidence}%): Boosting Leverage to 5x${RESET}`);
@@ -133,7 +136,7 @@ async function main() {
                             console.log(`${YELLOW}⚡ STANDARD ENTRY (${signal.confidence}%): Using 3x Leverage${RESET}`);
                         }
 
-                        const size = BASE_COLLATERAL * targetLeverage; // $150 to $750
+                        const size = BASE_COLLATERAL * targetLeverage; // $150 to $500
 
                         try {
                             const res = await engine.executeOrder(
