@@ -15,7 +15,6 @@ const RESET = '\x1b[0m';
 import dbConnect from '../src/lib/db';
 import Trade from '../src/models/Trade';
 import { TradeAnalyzer } from '../src/services/trade-analyzer';
-import { preTradeCheck } from '../src/lib/trade-guards';
 
 async function main() {
     console.log(`${CYAN}=========================================${RESET}`);
@@ -37,7 +36,9 @@ async function main() {
     console.log(`${GREEN}Engine Ready.${RESET}`);
 
     // 2. Loop
-    // TRACKING: In-memory lock to prevent rapid-fire on same symbol
+    // TRACKING: Keep track of pending orders to prevent "Machine Gun" duplicates
+    // The Account State is polled, so it might be 1-2s stale.
+    // We use a local Set to block immediate re-entry.
     const pendingSymbols = new Set<string>();
 
     while (true) {
@@ -60,29 +61,29 @@ async function main() {
                 console.log(`${YELLOW}No signals found.${RESET}`);
             } else {
                 for (const signal of signals) {
+                    // 1. Check if we already have a position
                     const symbol = signal.symbol;
 
-                    // IN-MEMORY RAPID-FIRE LOCK
-                    if (pendingSymbols.has(symbol)) continue;
+                    // STRICT DUPLICATE GUARD
+                    const isAlreadyOpen = account?.openPositions && account.openPositions[symbol];
+                    const isPending = pendingSymbols.has(symbol);
 
-                    // 5-LAYER PRE-TRADE GUARD (On-chain + DB + Cooldown + Max Pos + Circuit Breaker)
-                    const guard = await preTradeCheck(symbol, signal.action as 'BUY' | 'SELL', engine);
-                    if (!guard.allowed) {
-                        console.log(`${RED}⛔ [${guard.gate}] ${symbol}: ${guard.reason}${RESET}`);
+                    if (isAlreadyOpen || isPending) {
+                        // console.log(`[SKIP] ${symbol} - Already Active/Pending`);
                         continue;
                     }
 
-                    // BLACKLIST CHECK (3+ losses in 24h)
+                    // 2. Validate Signal Strength
+                    console.log(`Signal: ${signal.action === 'BUY' ? GREEN : RED}${signal.action} ${symbol}${RESET} (Score: ${signal.score.toFixed(2)} | Conf: ${signal.confidence}%)`);
+
+                    // FIX #5: BLACKLIST CHECK (Skip symbols with 3+ recent losses)
                     try {
                         const isBlacklisted = await TradeAnalyzer.checkBlacklist(symbol);
                         if (isBlacklisted) {
                             console.log(`${RED}⛔ ${symbol} BLACKLISTED (3+ losses in 24h). Skipping.${RESET}`);
                             continue;
                         }
-                    } catch { /* DB not available */ }
-
-                    // Signal Info
-                    console.log(`Signal: ${signal.action === 'BUY' ? GREEN : RED}${signal.action} ${symbol}${RESET} (Score: ${signal.score.toFixed(2)} | Conf: ${signal.confidence}%)`);
+                    } catch { /* DB not available, skip check */ }
 
                     // C. Auto-Execute (If High Confidence)
                     // Threshold: 45% (Matches 'Active Scalp' logic in analysis-v5)
@@ -298,43 +299,7 @@ async function main() {
 
                     console.log(`[MANAGE] ${symbol} (${side}) PnL: ${pnlPct.toFixed(2)}% ($${uPnl.toFixed(2)})`);
 
-                    // 0. ZOMBIE RESURRECTION (Fix vs DB Desync)
-                    const dbTrade = await Trade.findOne({ symbol: symbol }).sort({ entryTime: -1 });
-                    if (dbTrade && dbTrade.status === 'CLOSED') {
-                        console.log(`${YELLOW}🧟 ZOMBIE DETECTED: ${symbol} is OPEN on-chain but CLOSED in DB. Resurrecting...${RESET}`);
-                        dbTrade.status = 'OPEN';
-                        dbTrade.exitReason = undefined;
-                        dbTrade.exitTime = undefined;
-                        await dbTrade.save();
-                    } else if (!dbTrade) {
-                        // Adopt unknown trade? Maybe later. For now, logging.
-                        console.log(`${YELLOW}👻 UNKNOWN TRADE: ${symbol} has no DB record.${RESET}`);
-                    }
-
-                    // 0.5 KILL SWITCH (-15% Hard Fail-safe)
-                    // Ignores all signals. If we are bleeding this much, just get out.
-                    if (pnlPct < -15.0) {
-                        console.log(`${RED}☠️ KILL SWITCH ACTIVATED: ${symbol} is down ${pnlPct.toFixed(2)}%. CLOSING NOW.${RESET}`);
-                        await engine.executeOrder(
-                            symbol,
-                            isLong ? 'SELL' : 'BUY',
-                            Math.abs(size * currentPrice),
-                            currentPrice,
-                            1,
-                            true
-                        );
-                        // Update DB
-                        await Trade.updateMany(
-                            { symbol: symbol, status: 'OPEN' },
-                            {
-                                status: 'CLOSED',
-                                exitReason: "KILL SWITCH (-15%)",
-                                exitTime: Date.now(),
-                                pnlValue: uPnl
-                            }
-                        );
-                        continue; // Skip other checks
-                    }
+                    // 1. SOFT STOP CHECK (-5% Threshold - WIDENED)
                     if (pnlPct < -5.0) {
                         const match = freshSignals.find((s: any) => s.symbol === symbol);
                         let shouldClose = false;
