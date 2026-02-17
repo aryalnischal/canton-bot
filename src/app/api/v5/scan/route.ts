@@ -1,6 +1,7 @@
 
 import { NextResponse } from 'next/server';
 import { ScannerService } from '@/services/scanner';
+import { logActivity } from '@/lib/activity-store';
 
 // Cache
 const CACHE_TTL = 2 * 60 * 1000;
@@ -51,10 +52,17 @@ export async function GET() {
         const payload = {
             success: true,
             markets: markets,
-            // signals: filteredSignals.filter(s => s.action !== 'NEUTRAL' || s.reasons.length > 0), // Clean up
-            signals: filteredSignals, // Show ALL for dashboard visibility
+            signals: filteredSignals,
             timestamp: Date.now()
         };
+
+        // Log scan activity (in-memory, zero overhead)
+        const actionable = filteredSignals.filter((s: any) => s.action !== 'NEUTRAL');
+        logActivity('SCAN', `Scanned ${markets} markets → ${actionable.length} actionable signals`, {
+            markets,
+            total: filteredSignals.length,
+            actionable: actionable.map((s: any) => `${s.action} ${s.symbol} (${(s.confidence * 100).toFixed(0)}%)`)
+        });
 
         cache = { data: payload, timestamp: Date.now() };
         return NextResponse.json(payload);

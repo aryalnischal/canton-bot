@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Activity } from "lucide-react";
+import { Activity, Clock, Shield, TrendingUp, Radio } from "lucide-react";
 
 import { generateTradeSignal, ManualAnalysisData } from "@/lib/analysis";
 
@@ -24,6 +24,9 @@ export function SignalScanner() {
 
     // PNL STATE
     const [pnlData, setPnlData] = useState<any>({ totalPnl: 0, pnl24h: 0, pnl48h: 0, winRate24h: 0 });
+
+    // ACTIVITY FEED
+    const [activityFeed, setActivityFeed] = useState<any[]>([]);
 
     // 1. POLL WALLET & MARKET SCAN (Unified)
     useEffect(() => {
@@ -50,6 +53,13 @@ export function SignalScanner() {
                 const pData = await pRes.json();
                 if (pData.success) {
                     setPnlData(pData);
+                }
+
+                // D. ACTIVITY FEED (lightweight, in-memory)
+                const aRes = await fetch('/api/activity?minutes=10');
+                const aData = await aRes.json();
+                if (aData.success) {
+                    setActivityFeed(aData.activity);
                 }
 
                 setIsLoading(false);
@@ -224,6 +234,52 @@ export function SignalScanner() {
                 ))}
             </div>
             {isLoading && <div className="text-center text-zinc-500 py-10 animate-pulse">Scanning dYdX Markets...</div>}
+
+            {/* ACTIVITY FEED */}
+            <div className="rounded-xl border border-zinc-800 bg-zinc-950/50 overflow-hidden shadow-xl">
+                <div className="p-4 border-b border-zinc-800 flex justify-between items-center bg-zinc-900/50">
+                    <h3 className="font-semibold text-sm flex items-center gap-2 text-zinc-200">
+                        <Radio className="h-4 w-4 text-blue-400 animate-pulse" /> Activity Feed (Last 10 min)
+                    </h3>
+                    <span className="text-[10px] font-mono text-zinc-500">{activityFeed.length} events</span>
+                </div>
+                <div className="max-h-[240px] overflow-y-auto">
+                    {activityFeed.length === 0 ? (
+                        <div className="p-6 text-center text-zinc-600 italic text-sm">No recent activity — waiting for next scan cycle...</div>
+                    ) : (
+                        <div className="divide-y divide-white/5">
+                            {activityFeed.map((entry: any, i: number) => {
+                                const time = new Date(entry.timestamp).toLocaleTimeString();
+                                const icon = entry.type === 'SCAN' ? <TrendingUp className="h-3.5 w-3.5 text-blue-400" /> :
+                                    entry.type === 'TRADE' ? <Activity className="h-3.5 w-3.5 text-emerald-400" /> :
+                                        entry.type === 'GUARD' ? <Shield className="h-3.5 w-3.5 text-amber-400" /> :
+                                            <Clock className="h-3.5 w-3.5 text-zinc-400" />;
+                                const color = entry.type === 'TRADE' ? 'text-emerald-400' :
+                                    entry.type === 'GUARD' ? 'text-amber-400' :
+                                        entry.type === 'SCAN' ? 'text-blue-400' : 'text-zinc-400';
+
+                                return (
+                                    <div key={i} className="px-4 py-2.5 flex items-start gap-3 hover:bg-white/[0.02] transition-colors">
+                                        <div className="mt-0.5">{icon}</div>
+                                        <div className="flex-1 min-w-0">
+                                            <div className="flex justify-between items-center">
+                                                <span className={`text-xs font-bold uppercase tracking-wider ${color}`}>{entry.type}</span>
+                                                <span className="text-[10px] font-mono text-zinc-600">{time}</span>
+                                            </div>
+                                            <p className="text-xs text-zinc-300 mt-0.5 truncate">{entry.message}</p>
+                                            {entry.details?.actionable && entry.details.actionable.length > 0 && (
+                                                <p className="text-[10px] text-zinc-500 mt-1 truncate">
+                                                    Signals: {entry.details.actionable.join(', ')}
+                                                </p>
+                                            )}
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    )}
+                </div>
+            </div>
 
         </div>
     );

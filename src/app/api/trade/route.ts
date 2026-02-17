@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getEngine } from '@/lib/engine-singleton';
 import { preTradeCheck } from '@/lib/trade-guards';
+import { logActivity } from '@/lib/activity-store';
 
 // FIX #6: Shared Singleton (no more duplicate connections)
 const engine = getEngine();
@@ -32,6 +33,7 @@ export async function POST(req: Request) {
             const guard = await preTradeCheck(symbol, action, engine);
             if (!guard.allowed) {
                 console.warn(`[GATE] ${guard.gate}: ${guard.reason}`);
+                logActivity('GUARD', `Blocked ${action} ${symbol}: ${guard.reason}`, { gate: guard.gate });
                 return NextResponse.json(
                     { success: false, error: guard.reason, gate: guard.gate },
                     { status: guard.gate === 'CIRCUIT_BREAKER' ? 503 : 429 }
@@ -124,6 +126,9 @@ export async function POST(req: Request) {
 
         // PERSISTENCE (V24): Save to MongoDB
         if (result.success) {
+            logActivity('TRADE', `${action} ${symbol} — $${safeSize.toFixed(2)} @ $${currentPriceReference}`, {
+                txHash: result.txHash, leverage: leverage || 1
+            });
             try {
                 const { default: dbConnect } = await import('@/lib/db');
                 const { default: Trade } = await import('@/models/Trade');
