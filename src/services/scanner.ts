@@ -78,8 +78,8 @@ export class ScannerService {
         const results: any[] = [];
 
         // 2. Fetch Candles for Top Assets
-        // 2. SELECTION LOGIC (Hybrid: Volume + Volatility)
-        // A. Volume Leaders (Top 15)
+        // 2. SELECTION LOGIC (Strict Liquidity: Volume + OI)
+        // A. Volume Leaders (Top 10) - Prevents slippage
         const sortedByVol = [...marketKeys].sort((a, b) => {
             const volA = parseFloat(markets[a].volume24H || "0");
             const volB = parseFloat(markets[b].volume24H || "0");
@@ -87,22 +87,21 @@ export class ScannerService {
         });
         const volumeTargets = sortedByVol.slice(0, 15);
 
-        // B. Volatility Movers (Top 10 from remainder)
-        const remainder = sortedByVol.slice(15);
-        const sortedByVolat = remainder.sort((a, b) => {
-            // Use Absolute Change to find biggest movers (Up or Down)
-            const changeA = Math.abs(parseFloat(markets[a].priceChange24H || "0"));
-            const changeB = Math.abs(parseFloat(markets[b].priceChange24H || "0"));
-            return changeB - changeA;
+        // B. Open Interest Leaders (Top 10) - Prevents manipulation
+        const sortedByOI = [...marketKeys].sort((a, b) => {
+            const oiA = parseFloat(markets[a].openInterest || "0");
+            const oiB = parseFloat(markets[b].openInterest || "0");
+            return oiB - oiA;
         });
-        const volatilityTargets = sortedByVolat.slice(0, 10);
+        const oiTargets = sortedByOI.slice(0, 10);
 
-        // Combine
-        const targets = [...volumeTargets, ...volatilityTargets];
+        // Combine & Dedup
+        const uniqueTargets = new Set([...volumeTargets, ...oiTargets]);
+        const targets = Array.from(uniqueTargets);
 
-        console.log(`[SCANNER] Selected ${targets.length} Targets:`);
-        console.log(`   > Top Volume: ${volumeTargets.join(', ')}`);
-        console.log(`   > Top Volat : ${volatilityTargets.join(', ')}`);
+        console.log(`[SCANNER] Selected ${targets.length} Valid Liquid Targets:`);
+        console.log(`   > Targets: ${targets.join(', ')}`);
+        // Removed Volatility Logic (Dangerous on low caps)
 
         for (const symbol of targets) {
             try {

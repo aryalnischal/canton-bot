@@ -61,7 +61,36 @@ export function SignalScanner() {
         return () => clearInterval(timer);
     }, []);
 
-    // ... (Close/Open Functions Unchanged) ...
+    const closePosition = async (p: any) => {
+        const symbol = p.market || p.ticker || p.symbol;
+        if (!confirm(`Confirm CLOSE ${symbol}?`)) return;
+
+        try {
+            const res = await fetch('/api/trade', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    symbol: symbol,
+                    action: p.side === 'LONG' ? 'SELL' : 'BUY',
+                    size: Math.abs(parseFloat(p.size)),
+                    price: parseFloat(p.oraclePrice || p.entryPrice),
+                    type: 'MARKET',
+                    reduceOnly: true,
+                    reason: "Manual UI Close"
+                })
+            });
+
+            const data = await res.json();
+            if (data.success) {
+                alert("Close Order Sent!");
+            } else {
+                alert("Close Failed: " + (data.error || "Unknown"));
+            }
+        } catch (e) {
+            console.error(e);
+            alert("Network Error");
+        }
+    };
 
     return (
         <div className="space-y-6">

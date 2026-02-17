@@ -288,7 +288,43 @@ async function main() {
 
                     console.log(`[MANAGE] ${symbol} (${side}) PnL: ${pnlPct.toFixed(2)}% ($${uPnl.toFixed(2)})`);
 
-                    // 1. SOFT STOP CHECK (-5% Threshold - WIDENED)
+                    // 0. ZOMBIE RESURRECTION (Fix vs DB Desync)
+                    const dbTrade = await Trade.findOne({ symbol: symbol }).sort({ entryTime: -1 });
+                    if (dbTrade && dbTrade.status === 'CLOSED') {
+                        console.log(`${YELLOW}🧟 ZOMBIE DETECTED: ${symbol} is OPEN on-chain but CLOSED in DB. Resurrecting...${RESET}`);
+                        dbTrade.status = 'OPEN';
+                        dbTrade.exitReason = undefined;
+                        dbTrade.exitTime = undefined;
+                        await dbTrade.save();
+                    } else if (!dbTrade) {
+                        // Adopt unknown trade? Maybe later. For now, logging.
+                        console.log(`${YELLOW}👻 UNKNOWN TRADE: ${symbol} has no DB record.${RESET}`);
+                    }
+
+                    // 0.5 KILL SWITCH (-15% Hard Fail-safe)
+                    // Ignores all signals. If we are bleeding this much, just get out.
+                    if (pnlPct < -15.0) {
+                        console.log(`${RED}☠️ KILL SWITCH ACTIVATED: ${symbol} is down ${pnlPct.toFixed(2)}%. CLOSING NOW.${RESET}`);
+                        await engine.executeOrder(
+                            symbol,
+                            isLong ? 'SELL' : 'BUY',
+                            Math.abs(size * currentPrice),
+                            currentPrice,
+                            1,
+                            true
+                        );
+                        // Update DB
+                        await Trade.updateMany(
+                            { symbol: symbol, status: 'OPEN' },
+                            {
+                                status: 'CLOSED',
+                                exitReason: "KILL SWITCH (-15%)",
+                                exitTime: Date.now(),
+                                pnlValue: uPnl
+                            }
+                        );
+                        continue; // Skip other checks
+                    }
                     if (pnlPct < -5.0) {
                         const match = freshSignals.find((s: any) => s.symbol === symbol);
                         let shouldClose = false;

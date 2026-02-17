@@ -38,10 +38,10 @@ async function run() {
         await mongoose.connect(MONGODB_URI!);
         console.log("Connected.");
 
-        // Fetch Trades for APT-USD
-        const trades = await Trade.find({ symbol: 'APT-USD' }).sort({ entryTime: -1 });
+        // Fetch Trades for DASH-USD
+        const trades = await Trade.find({ symbol: 'DASH-USD' }).sort({ entryTime: -1 });
 
-        console.log(`\n📊 Found ${trades.length} APT-USD Trades:\n`);
+        console.log(`\n📊 Found ${trades.length} DASH-USD Trades:\n`);
 
         trades.forEach((t: any) => {
             const entryTime = new Date(t.entryTime || t.timestamp).toLocaleString();
