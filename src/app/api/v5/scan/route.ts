@@ -58,8 +58,9 @@ export async function GET() {
 
         // Log scan activity (in-memory, zero overhead)
         const actionable = filteredSignals.filter((s: any) => s.action !== 'NEUTRAL');
-        logActivity('SCAN', `Scanned ${markets} markets → ${actionable.length} actionable signals`, {
-            markets,
+        const symbolList = filteredSignals.map((s: any) => s.symbol);
+        logActivity('SCAN', `Scanned ${filteredSignals.length} markets → ${actionable.length} actionable signals`, {
+            symbols: symbolList,
             total: filteredSignals.length,
             actionable: actionable.map((s: any) => `${s.action} ${s.symbol} (${(s.confidence * 100).toFixed(0)}%)`)
         });
