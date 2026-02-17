@@ -1,9 +1,8 @@
 import { NextResponse } from 'next/server';
-import { DydxExecutionService } from '@/services/dydx-execution';
+import { getEngine } from '@/lib/engine-singleton';
 
-// Singleton Instance (Shared with Trade API to keep connection alive)
-// Note: In Next.js dev mode, this might re-instantiate, but DydxExecutionService handles its own init.
-const engine = new DydxExecutionService();
+// FIX #6: Shared Singleton (no more duplicate connections)
+const engine = getEngine();
 
 export async function GET() {
     try {
@@ -65,7 +64,7 @@ export async function GET() {
             equity,
             freeCollateral,
             positions,
-            address: process.env.HL_WALLET_ADDRESS || "dydx-user"
+            address: "dydx-user" // FIX #7: Removed legacy HL_WALLET_ADDRESS ref
         });
 
     } catch (e: any) {

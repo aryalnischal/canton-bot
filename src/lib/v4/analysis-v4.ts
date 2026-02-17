@@ -186,13 +186,25 @@ export function generateV4Signal(
 }
 
 export function calculateATR(candles: { c: number, v: number, h?: number, l?: number }[], period: number) {
-    if (!candles[0].h) {
-        const closes = candles.map(c => c.c).slice(-period);
-        const mean = closes.reduce((a, b) => a + b, 0) / period;
-        const variance = closes.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / period;
-        return Math.sqrt(variance);
+    if (candles[0]?.h && candles[0]?.l) {
+        // Proper ATR using True Range
+        const trs: number[] = [];
+        for (let i = 1; i < candles.length; i++) {
+            const high = candles[i].h!;
+            const low = candles[i].l!;
+            const prevClose = candles[i - 1].c;
+            const tr = Math.max(high - low, Math.abs(high - prevClose), Math.abs(low - prevClose));
+            trs.push(tr);
+        }
+        if (trs.length < period) return trs.reduce((a, b) => a + b, 0) / (trs.length || 1);
+        // Average of last `period` TRs
+        return trs.slice(-period).reduce((a, b) => a + b, 0) / period;
     }
-    return 0;
+    // Fallback: Standard Deviation proxy when no h/l
+    const closes = candles.map(c => c.c).slice(-period);
+    const mean = closes.reduce((a, b) => a + b, 0) / period;
+    const variance = closes.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / period;
+    return Math.sqrt(variance);
 }
 
 function calculateRSI(closes: number[], period: number = 14): number {

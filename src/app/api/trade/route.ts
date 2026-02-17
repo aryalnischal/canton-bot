@@ -1,9 +1,9 @@
 import { NextResponse } from 'next/server';
-import { DydxExecutionService } from '@/services/dydx-execution';
+import { getEngine } from '@/lib/engine-singleton';
+import { preTradeCheck } from '@/lib/trade-guards';
 
-// Singleton Instance (to keep wallet connected)
-// Note: In Serverless/Next.js (Lambda), this might re-init per request. 
-const engine = new DydxExecutionService();
+// FIX #6: Shared Singleton (no more duplicate connections)
+const engine = getEngine();
 
 // CONCURRENCY LOCK (Prevent Race Conditions)
 let isProcessing = false;
@@ -27,64 +27,15 @@ export async function POST(req: Request) {
 
         console.log(`[API] Received Trade Request: ${action} ${symbol}`);
 
-        // SAFETY GATES (V27 DB CHECK)
+        // 5-LAYER PRE-TRADE GUARD (On-chain + DB + Cooldown + Max Pos + Circuit Breaker)
         if (!body.force && !body.reduceOnly) {
-            try {
-                const { default: dbConnect } = await import('@/lib/db');
-                const { default: Trade } = await import('@/models/Trade');
-                await dbConnect();
-
-                // 1. DUPLICATE CHECK
-                const existing = await Trade.findOne({ symbol, status: 'OPEN' });
-                if (existing) {
-                    if (existing.action === action) {
-                        console.warn(`[GATE] Blocked Duplicate: ${symbol} is already OPEN`);
-                        return NextResponse.json({ success: false, error: `Duplicate: ${symbol} is already Active.` }, { status: 400 });
-                    }
-                }
-
-                // 2. GLOBAL POSITION LIMIT (Max 3)
-                const openCount = await Trade.countDocuments({ status: 'OPEN' });
-                if (openCount >= 3) { // Hard Cap
-                    console.warn(`[GATE] Blocked Max Positions: ${openCount}/3 active.`);
-                    return NextResponse.json({ success: false, error: "Global Limit: Max 3 positions reached." }, { status: 429 });
-                }
-
-                // 3. DAILY CIRCUIT BREAKER (-10% PnL)
-                const oneDayAgo = Date.now() - (24 * 60 * 60 * 1000);
-                const dailyTrades = await Trade.find({
-                    status: 'CLOSED',
-                    exitTime: { $gt: oneDayAgo }
-                });
-
-                // Fetch Current Equity first for context
-                const accountState = await engine.getAccountState();
-                const currentEquity = accountState ? parseFloat(accountState.equity) : 250;
-
-                const dailyPnL = dailyTrades.reduce((acc: number, t: any) => acc + (t.pnlValue || 0), 0);
-                const pnlPercent = (dailyPnL / Math.max(currentEquity, 250)) * 100;
-
-                if (pnlPercent < -10) { // -10% User Threshold
-                    console.error(`[KILL SWITCH] Circuit Breaker Triggered! Daily PnL: ${pnlPercent.toFixed(2)}%`);
-                    return NextResponse.json({ success: false, error: `CIRCUIT BREAKER: Daily Drawdown ${pnlPercent.toFixed(2)}% exceeds -10%.` }, { status: 503 });
-                }
-
-                // 4. COOLDOWN CHECK
-                const thirtyMinAgo = Date.now() - (30 * 60 * 1000);
-                const recentClose = await Trade.findOne({
-                    symbol,
-                    status: 'CLOSED',
-                    exitTime: { $gt: thirtyMinAgo }
-                });
-
-                if (recentClose) {
-                    const readyAt = new Date(recentClose.exitTime + (30 * 60 * 1000)).toLocaleTimeString();
-                    console.warn(`[GATE] Blocked Cooldown: ${symbol} closed recently. Wait until ${readyAt}`);
-                    return NextResponse.json({ success: false, error: `Cooldown: Recently active.` }, { status: 429 });
-                }
-
-            } catch (gateError) {
-                console.error("[GATE] DB Check Failed (Permitting Trade for Safety Fallback)", gateError);
+            const guard = await preTradeCheck(symbol, action, engine);
+            if (!guard.allowed) {
+                console.warn(`[GATE] ${guard.gate}: ${guard.reason}`);
+                return NextResponse.json(
+                    { success: false, error: guard.reason, gate: guard.gate },
+                    { status: guard.gate === 'CIRCUIT_BREAKER' ? 503 : 429 }
+                );
             }
         }
 
@@ -159,9 +110,15 @@ export async function POST(req: Request) {
             leverage || 1,
             body.reduceOnly || false,
             {
-                sl: body.sl ? parseFloat(body.sl) : undefined,
+
                 tp: body.tp ? parseFloat(body.tp) : undefined,
-                trailingPercent: body.trailingPercent // [NEW] Pass trailing to execution
+                trailingPercent: body.trailingPercent,
+                sl: body.sl ? parseFloat(body.sl) : (
+                    // CROSS LEVERAGE DEFAULT: -15% Safety Net
+                    action === 'BUY'
+                        ? parseFloat((currentPriceReference * 0.85).toFixed(4))
+                        : parseFloat((currentPriceReference * 1.15).toFixed(4))
+                )
             }
         );
 

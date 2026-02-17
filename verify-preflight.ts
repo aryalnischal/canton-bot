@@ -35,7 +35,7 @@ async function runAudit() {
             console.log("    ✅ Data Universe Populated");
         }
     } catch (e) {
-        console.error(`    ❌ API HEALTH FAILED: ${e.message}`);
+        console.error(`    ❌ API HEALTH FAILED: ${(e as any).message}`);
         auditFailures++;
     }
 
@@ -75,7 +75,7 @@ async function runAudit() {
         console.log("    ✅ Qualifier Logic: PASS");
 
     } catch (e) {
-        console.error(`    ❌ QUALIFIER FAILED: ${e.message}`);
+        console.error(`    ❌ QUALIFIER FAILED: ${(e as any).message}`);
         auditFailures++;
     }
 
@@ -96,7 +96,7 @@ async function runAudit() {
         if (res.status === 500) throw new Error("API Crashed on basic request");
         console.log("    ✅ Trade API accepts requests (Endpoint Active)");
     } catch (e) {
-        console.error(`    ❌ DB/API CHECK FAILED: ${e.message}`);
+        console.error(`    ❌ DB/API CHECK FAILED: ${(e as any).message}`);
         auditFailures++;
     }
 

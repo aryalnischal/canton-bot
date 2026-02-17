@@ -14,6 +14,8 @@ const RESET = '\x1b[0m';
 
 import dbConnect from '../src/lib/db';
 import Trade from '../src/models/Trade';
+import { TradeAnalyzer } from '../src/services/trade-analyzer';
+import { preTradeCheck } from '../src/lib/trade-guards';
 
 async function main() {
     console.log(`${CYAN}=========================================${RESET}`);
@@ -35,9 +37,7 @@ async function main() {
     console.log(`${GREEN}Engine Ready.${RESET}`);
 
     // 2. Loop
-    // TRACKING: Keep track of pending orders to prevent "Machine Gun" duplicates
-    // The Account State is polled, so it might be 1-2s stale.
-    // We use a local Set to block immediate re-entry.
+    // TRACKING: In-memory lock to prevent rapid-fire on same symbol
     const pendingSymbols = new Set<string>();
 
     while (true) {
@@ -60,21 +60,29 @@ async function main() {
                 console.log(`${YELLOW}No signals found.${RESET}`);
             } else {
                 for (const signal of signals) {
-                    // 1. Check if we already have a position
                     const symbol = signal.symbol;
 
-                    // STRICT DUPLICATE GUARD
-                    const isAlreadyOpen = account?.openPositions && account.openPositions[symbol];
-                    const isPending = pendingSymbols.has(symbol);
+                    // IN-MEMORY RAPID-FIRE LOCK
+                    if (pendingSymbols.has(symbol)) continue;
 
-                    if (isAlreadyOpen || isPending) {
-                        // console.log(`[SKIP] ${symbol} - Already Active/Pending`);
+                    // 5-LAYER PRE-TRADE GUARD (On-chain + DB + Cooldown + Max Pos + Circuit Breaker)
+                    const guard = await preTradeCheck(symbol, signal.action as 'BUY' | 'SELL', engine);
+                    if (!guard.allowed) {
+                        console.log(`${RED}⛔ [${guard.gate}] ${symbol}: ${guard.reason}${RESET}`);
                         continue;
                     }
 
-                    // 2. Validate Signal Strength
-                    console.log(`Signal: ${signal.action === 'BUY' ? GREEN : RED}${signal.action} ${symbol}${RESET} (Score: ${signal.score.toFixed(2)} | Conf: ${signal.confidence}%)`);
+                    // BLACKLIST CHECK (3+ losses in 24h)
+                    try {
+                        const isBlacklisted = await TradeAnalyzer.checkBlacklist(symbol);
+                        if (isBlacklisted) {
+                            console.log(`${RED}⛔ ${symbol} BLACKLISTED (3+ losses in 24h). Skipping.${RESET}`);
+                            continue;
+                        }
+                    } catch { /* DB not available */ }
 
+                    // Signal Info
+                    console.log(`Signal: ${signal.action === 'BUY' ? GREEN : RED}${signal.action} ${symbol}${RESET} (Score: ${signal.score.toFixed(2)} | Conf: ${signal.confidence}%)`);
 
                     // C. Auto-Execute (If High Confidence)
                     // Threshold: 45% (Matches 'Active Scalp' logic in analysis-v5)
@@ -148,10 +156,12 @@ async function main() {
                                 false, // ReduceOnly
                                 {
                                     // HARD STOP LOSS (Safety Net)
-                                    // -10% Max Risk (Catastrophic Guard)
+                                    // CROSS LEVERAGE SAFETY STOP
+                                    // We allow the trade to breathe (Cross Margin benefits).
+                                    // Hard Stop at -15% price move to prevent total blow-up.
                                     sl: isBuy
-                                        ? parseFloat((price * 0.90).toFixed(4))
-                                        : parseFloat((price * 1.10).toFixed(4)),
+                                        ? parseFloat((price * 0.85).toFixed(4))
+                                        : parseFloat((price * 1.15).toFixed(4)),
 
                                     // tp: undefined (We use Market Close logic)
                                 }

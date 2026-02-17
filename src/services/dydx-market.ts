@@ -51,8 +51,8 @@ export class DydxMarketService extends EventEmitter {
             // Actually, user wants "CEX-like speed". Polling is bad.
             // Let's rely on `indexerClient.socket`.
 
-            if (this.client.socket) {
-                this.ws = this.client.socket;
+            if ((this.client as any).socket) {
+                this.ws = (this.client as any).socket;
                 // Connect logic usually handled by SDK on first subscribe?
                 console.log("[DYDX-WS] WebSocket handler ready.");
                 this.isReady = true;

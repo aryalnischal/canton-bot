@@ -1,5 +1,5 @@
 
-import { HyperliquidExecutionService } from './src/services/execution-engine.ts';
+import { HyperliquidExecutionService } from './src/services/execution-engine';
 import { logger } from './src/lib/logger';
 import dotenv from 'dotenv';
 

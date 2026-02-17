@@ -118,11 +118,12 @@ export class DydxExecutionService {
             // Size = (USD / Price) 
             let rawSize = sizeUsd / currentPrice;
 
-            // Round to 3 decimals effectively which is safe for most crypto.
-            const size = parseFloat(rawSize.toFixed(3));
+            // Round to market step size
+            const stepSize = parseFloat(market.stepSize || '0.001');
+            const size = parseFloat((Math.floor(rawSize / stepSize) * stepSize).toFixed(10));
 
             if (size <= 0 || !isFinite(size)) {
-                return { success: false, error: `Invalid Size Calculation: ${size} (Price: ${currentPrice})` };
+                return { success: false, error: `Invalid Size Calculation: ${size} (Price: ${currentPrice}, stepSize: ${stepSize})` };
             }
 
             // 2. Place Order
@@ -131,22 +132,23 @@ export class DydxExecutionService {
 
             console.log(`[DYDX] Placing ${action} ${size} ${symbol} (Reduce: ${reduceOnly})...`);
 
-            // AGGRESSIVE CLOSE LOGIC
-            // If Reducing Position, use LIMIT IOC with 5% Slippage to guarantee fill (User Request)
-            let orderType = OrderType.MARKET;
-            let price = 0;
-            let tif = OrderTimeInForce.IOC;
+            // FIX: dYdX v4 MARKET orders with price=0 silently fail.
+            // Use LIMIT IOC with 5% slippage for ALL orders (standard dYdX v4 pattern).
+            const orderType = OrderType.LIMIT;
+            const tif = OrderTimeInForce.IOC;
 
-            if (reduceOnly) {
-                orderType = OrderType.LIMIT;
-                // Buy: Price * 1.05 (Willing to pay more to close Short)
-                // Sell: Price * 0.95 (Willing to sell less to close Long)
-                price = action === 'BUY'
-                    ? parseFloat((currentPrice * 1.05).toFixed(4))
-                    : parseFloat((currentPrice * 0.95).toFixed(4));
+            // Worst-case price with 5% slippage
+            // BUY: willing to pay 5% more | SELL: willing to accept 5% less
+            let price = action === 'BUY'
+                ? currentPrice * 1.05
+                : currentPrice * 0.95;
 
-                console.log(`[DYDX] Aggressive Close: LIMIT IOC at ${price} (5% Slippage)`);
-            }
+            // Round to market tick size
+            const tickSize = parseFloat(market.tickSize || '0.01');
+            price = Math.round(price / tickSize) * tickSize;
+            price = parseFloat(price.toFixed(6)); // clean floating point
+
+            console.log(`[DYDX] LIMIT IOC at $${price} (5% slippage from $${currentPrice})`);
 
             const tx = await this.client.placeOrder(
                 this.subaccount,
