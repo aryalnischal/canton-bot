@@ -64,7 +64,7 @@ export async function GET() {
             equity,
             freeCollateral,
             positions,
-            address: "dydx-user" // FIX #7: Removed legacy HL_WALLET_ADDRESS ref
+            address: subaccount.address || 'unknown'
         });
 
     } catch (e: any) {

@@ -94,17 +94,23 @@ export function SignalScanner() {
 
     return (
         <div className="space-y-6">
-            {/* HERDER STATS */}
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                {/* 1. EQUITY */}
-                <div className="bg-zinc-900/50 p-6 rounded-xl border border-zinc-800 flex flex-col justify-between">
-                    <span className="text-xs uppercase text-zinc-500 font-bold tracking-wider">Net Equity</span>
-                    <div className="text-3xl font-mono text-white font-bold">
+            {/* HEADER STATS */}
+            <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+                {/* 1. TOTAL PORTFOLIO BALANCE */}
+                <div className="bg-gradient-to-br from-zinc-900 to-zinc-800/80 p-6 rounded-xl border border-zinc-700 flex flex-col justify-between md:col-span-2 shadow-lg">
+                    <span className="text-xs uppercase text-zinc-400 font-bold tracking-wider">Portfolio Balance</span>
+                    <div className="text-4xl font-mono text-white font-bold mt-1">
                         ${equity.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </div>
+                    <div className="flex justify-between items-center mt-3 text-xs text-zinc-400">
+                        <span>Free: <span className="text-emerald-400 font-mono">${(walletData?.freeCollateral || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span></span>
+                        <span className="font-mono text-zinc-500 truncate ml-2" title={walletData?.address || ''}>
+                            {walletData?.address ? `${walletData.address.slice(0, 10)}...${walletData.address.slice(-6)}` : '—'}
+                        </span>
                     </div>
                 </div>
 
-                {/* 2. TOTAL PROFIT */}
+                {/* 2. LIFETIME PNL */}
                 <div className="bg-zinc-900/50 p-6 rounded-xl border border-zinc-800 flex flex-col justify-between">
                     <span className="text-xs uppercase text-zinc-500 font-bold tracking-wider">Lifetime PnL</span>
                     <div className={`text-2xl font-mono font-bold ${pnlData.totalPnl >= 0 ? "text-emerald-400" : "text-red-400"}`}>
@@ -121,12 +127,13 @@ export function SignalScanner() {
                     <span className="text-xs text-zinc-500 text-right">Win Rate: {pnlData.winRate24h.toFixed(0)}%</span>
                 </div>
 
-                {/* 4. 48H PERFORMANCE */}
+                {/* 4. POSITIONS + 48H */}
                 <div className="bg-zinc-900/50 p-6 rounded-xl border border-zinc-800 flex flex-col justify-between">
                     <span className="text-xs uppercase text-zinc-500 font-bold tracking-wider">48h Profit</span>
                     <div className={`text-2xl font-mono font-bold ${pnlData.pnl48h >= 0 ? "text-emerald-400" : "text-red-400"}`}>
                         {pnlData.pnl48h >= 0 ? "+" : ""}${pnlData.pnl48h.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </div>
+                    <span className="text-xs text-zinc-500 text-right">Positions: {activePositions.length}/3</span>
                 </div>
             </div>
 

@@ -22,7 +22,7 @@ async function main() {
     const client = await CompositeClient.connect(Network.mainnet());
 
     console.log("✅ Connected. Fetching Subaccount...");
-    const sub = await client.indexerClient.account.getSubaccount(wallet.address, 0);
+    const sub = await client.indexerClient.account.getSubaccount(wallet.address!, 0);
     const positions = sub.subaccount.openPositions;
 
     console.log("\n📊 ON-CHAIN POSITIONS:");
