@@ -135,15 +135,29 @@ async function executeTrade(signal: any, engine: DydxExecutionService) {
         );
 
         if (res.success) {
-            console.log(`${GREEN}✔ EXECUTED: ${res.txHash} ($${size}, ${targetLeverage}x)${RESET}`);
+            console.log(`${GREEN}✔ ORDER SUBMITTED: ${res.txHash} ($${size}, ${targetLeverage}x)${RESET}`);
+
+            // FILL VERIFICATION: Wait 3s then check if position actually exists on dYdX
+            await new Promise(r => setTimeout(r, 3000));
+            const postAccount = await engine.getAccountState();
+            const pos = postAccount?.openPositions?.[symbol];
+            const posSize = pos ? parseFloat(pos.size) : 0;
+
+            if (posSize === 0) {
+                console.log(`${RED}✘ FILL REJECTED: ${symbol} — no position on dYdX (margin/tier limit). Skipping DB save.${RESET}`);
+                pendingSymbols.delete(symbol);
+                return;
+            }
+
+            console.log(`${GREEN}✔ FILL CONFIRMED: ${symbol} size=${posSize}${RESET}`);
             setTimeout(() => pendingSymbols.delete(symbol), 30000);
 
             try {
                 await Trade.create({
                     id: res.txHash || `TX-${Date.now()}`,
                     symbol, action,
-                    price: res.filledPrice || price,
-                    size: res.filledSize || size,
+                    price: parseFloat(pos.entryPrice) || res.filledPrice || price,
+                    size: Math.abs(posSize),
                     leverage: targetLeverage,
                     status: 'OPEN',
                     txHash: res.txHash,
