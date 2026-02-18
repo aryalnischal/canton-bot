@@ -274,8 +274,8 @@ async function managePositions(
         //  RATCHETING PROFIT LOCK — once profitable, lock in gains
         //  Tier 0: No lock (pnl < 0.75%)
         //  Tier 1: PnL crossed 0.75% → SL moves to breakeven (0%)
-        //  Tier 2: PnL crossed 1.5%  → SL locks at +0.5%
-        //  Tier 3: PnL crossed 3.0%  → SL locks at +1.5%
+        //  Tier 2: PnL crossed 1.5%  → SL locks at +1.0%
+        //  Tier 3: PnL crossed 3.0%  → SL locks at +2.0%
         // ═══════════════════════════════════════════════════════════════
         const currentTier = profitTierMap.get(symbol) || 0;
         let newTier = currentTier;
@@ -287,13 +287,13 @@ async function managePositions(
         // Update tier (ratchet only goes UP, never down)
         if (newTier > currentTier) {
             profitTierMap.set(symbol, newTier);
-            const tierLabels = ['', 'Breakeven Lock', 'Profit Lock +0.5%', 'Profit Lock +1.5%'];
+            const tierLabels = ['', 'Breakeven Lock', 'Profit Lock +1.0%', 'Profit Lock +2.0%'];
             console.log(`${GREEN}🔒 RATCHET: ${symbol} upgraded to Tier ${newTier} (${tierLabels[newTier]})${RESET}`);
         }
 
         // Check if price has retreated below the locked floor
         const tier = profitTierMap.get(symbol) || 0;
-        const lockFloors = [null, 0, 0.5, 1.5]; // Tier → minimum PnL% floor
+        const lockFloors = [null, 0, 1.0, 2.0]; // Tier → minimum PnL% floor
         if (tier > 0 && lockFloors[tier] !== null && pnlPct < lockFloors[tier]!) {
             console.log(`${YELLOW}🔒 PROFIT LOCK TRIGGERED: ${symbol} — Tier ${tier} floor at ${lockFloors[tier]}% but PnL dropped to ${pnlPct.toFixed(2)}%${RESET}`);
             await closeAndRecord(symbol, closeSide, Math.abs(size * currentPrice), currentPrice, pnlPct, uPnl,
