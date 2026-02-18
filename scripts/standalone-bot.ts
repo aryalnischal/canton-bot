@@ -1,6 +1,6 @@
 
 import * as dotenv from 'dotenv';
-dotenv.config({ path: '.env.local' });
+dotenv.config({ path: '.env.local', override: true });
 
 import { DydxExecutionService } from '../src/services/dydx-execution';
 import { ScannerService } from '../src/services/scanner';
