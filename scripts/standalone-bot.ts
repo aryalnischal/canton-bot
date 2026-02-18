@@ -113,12 +113,12 @@ async function executeTrade(signal: any, engine: DydxExecutionService) {
     else if (signal.confidence > 70) { targetLeverage = 5; console.log(`${GREEN}⚡ STRONG (${signal.confidence}%): 5x${RESET}`); }
     else { console.log(`${YELLOW}⚡ STANDARD (${signal.confidence}%): 3x${RESET}`); }
 
-    // DYNAMIC POSITION SIZING — use actual free collateral, not fixed $50
+    // DYNAMIC POSITION SIZING — high conviction = bigger size
     const acctState = await engine.getAccountState();
     const freeCol = parseFloat(acctState?.freeCollateral || '0');
-    const baseCollateral = Math.floor(freeCol / MAX_POSITIONS);
-    if (baseCollateral < 5) {
-        console.log(`${RED}✘ Insufficient free collateral ($${freeCol.toFixed(2)}). Need at least $${MAX_POSITIONS * 5}.${RESET}`);
+    const baseCollateral = Math.floor(freeCol * 0.40); // 40% of free collateral per trade
+    if (baseCollateral < 15) {
+        console.log(`${RED}✘ Insufficient free collateral ($${freeCol.toFixed(2)}). Need at least $37.50.${RESET}`);
         pendingSymbols.delete(symbol);
         return;
     }
