@@ -96,6 +96,7 @@ async function executeTrade(signal: any, engine: DydxExecutionService) {
 
     console.log(`${CYAN}>>> EXECUTING ${symbol}...${RESET}`);
     pendingSymbols.add(symbol);
+    profitTierMap.delete(symbol); // Clear any stale profit tier from previous position
 
     if (!price) {
         console.log(`${RED}✘ No Price for ${symbol}${RESET}`);
