@@ -111,14 +111,18 @@ export function SignalScanner() {
         if (!confirm(`Confirm CLOSE ${symbol}?`)) return;
 
         try {
+            const tokenSize = Math.abs(parseFloat(p.szi || p.size));
+            const price = parseFloat(p.oraclePrice || p.entryPx || p.entryPrice);
+            const sizeUsd = tokenSize * price; // Convert token qty → USD notional
+
             const res = await fetch('/api/trade', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     symbol: symbol,
                     action: p.side === 'LONG' ? 'SELL' : 'BUY',
-                    size: Math.abs(parseFloat(p.size)),
-                    price: parseFloat(p.oraclePrice || p.entryPrice),
+                    size: sizeUsd,
+                    price: price,
                     type: 'MARKET',
                     reduceOnly: true,
                     reason: "Manual UI Close"
@@ -345,16 +349,16 @@ export function SignalScanner() {
                         {['today', '7d', '30d', 'all'].map(f => (
                             <button key={f} onClick={() => setHistoryFilter(f)}
                                 className={`text-[10px] px-2.5 py-1 rounded font-bold uppercase tracking-wider transition-colors ${historyFilter === f
-                                        ? 'bg-purple-500/20 text-purple-400 border border-purple-500/40'
-                                        : 'bg-zinc-800/50 text-zinc-500 border border-zinc-700/50 hover:text-zinc-300'
+                                    ? 'bg-purple-500/20 text-purple-400 border border-purple-500/40'
+                                    : 'bg-zinc-800/50 text-zinc-500 border border-zinc-700/50 hover:text-zinc-300'
                                     }`}>
                                 {f === 'today' ? 'Today' : f === '7d' ? '7 Days' : f === '30d' ? '30 Days' : 'All Time'}
                             </button>
                         ))}
                         <button onClick={() => setHistoryFilter('custom')}
                             className={`text-[10px] px-2.5 py-1 rounded font-bold uppercase tracking-wider transition-colors ${historyFilter === 'custom'
-                                    ? 'bg-purple-500/20 text-purple-400 border border-purple-500/40'
-                                    : 'bg-zinc-800/50 text-zinc-500 border border-zinc-700/50 hover:text-zinc-300'
+                                ? 'bg-purple-500/20 text-purple-400 border border-purple-500/40'
+                                : 'bg-zinc-800/50 text-zinc-500 border border-zinc-700/50 hover:text-zinc-300'
                                 }`}>
                             Custom
                         </button>
