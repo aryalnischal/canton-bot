@@ -460,12 +460,12 @@ async function main() {
                 console.log(`Balance: ${GREEN}$${equity.toFixed(2)}${RESET} | Free: $${freeCol.toFixed(2)}`);
             }
 
-            // B. Scan & Execute Signals
+            // B. Reconcile ghost trades FIRST (sets cooldowns before new signals)
+            await reconcileGhosts(engine);
+
+            // C. Scan & Execute Signals (cooldowns are now active)
             const { signals } = await scanner.scanMarkets();
             await handleSignals(signals, account, engine);
-
-            // C. Reconcile ghost trades
-            await reconcileGhosts(engine);
 
             // D. Manage open positions
             await managePositions(engine, scanner);
