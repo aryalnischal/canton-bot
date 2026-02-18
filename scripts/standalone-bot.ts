@@ -21,6 +21,7 @@ import { TradeAnalyzer } from '../src/services/trade-analyzer';
 const pendingSymbols = new Set<string>();
 const COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes
 const cooldownMap = new Map<string, number>(); // symbol → cooldown expiry timestamp
+const MAX_POSITIONS = 3; // Max concurrent positions (dYdX equity tier: 10 orders, ~3 per position)
 
 // ===================================================================
 //  SIGNAL HANDLER — Process new signals and execute trades
@@ -42,6 +43,15 @@ async function handleSignals(
         const isAlreadyOpen = account?.openPositions && account.openPositions[symbol];
         if (isAlreadyOpen || pendingSymbols.has(symbol)) continue;
 
+        // MAX POSITIONS GUARD
+        const openCount = account?.openPositions
+            ? Object.values(account.openPositions).filter((p: any) => parseFloat(p.size) !== 0).length
+            : 0;
+        if (openCount + pendingSymbols.size >= MAX_POSITIONS) {
+            console.log(`${YELLOW}⚠️ MAX POSITIONS (${MAX_POSITIONS}) reached — skipping new entries${RESET}`);
+            break; // No point checking more signals
+        }
+
         // COOLDOWN GUARD
         const cooldownUntil = cooldownMap.get(symbol);
         if (cooldownUntil && Date.now() < cooldownUntil) {
@@ -61,8 +71,8 @@ async function handleSignals(
         } catch { /* DB not available */ }
 
         // CONFIDENCE GATE
-        if (signal.confidence <= 20) {
-            console.log(`${YELLOW}skipped (confidence ${signal.confidence}% < 20%)${RESET}`);
+        if (signal.confidence <= 25) {
+            console.log(`${YELLOW}skipped (confidence ${signal.confidence}% < 25%)${RESET}`);
             continue;
         }
 
@@ -358,6 +368,57 @@ async function main() {
     console.log("Initializing Execution Engine...");
     await engine.getAccountState();
     console.log(`${GREEN}Engine Ready.${RESET}`);
+
+    // ===== PREFLIGHT HEALTH CHECK =====
+    console.log(`\n${CYAN}--- Preflight API Validation ---${RESET}`);
+    let preflightPassed = true;
+
+    // 1. dYdX API
+    try {
+        const acct = await engine.getAccountState();
+        if (acct?.equity) {
+            console.log(`${GREEN}✔ dYdX API     : OK (Balance: $${parseFloat(acct.equity).toFixed(2)})${RESET}`);
+        } else {
+            console.log(`${RED}✘ dYdX API     : No account data${RESET}`);
+            preflightPassed = false;
+        }
+    } catch (e) {
+        console.log(`${RED}✘ dYdX API     : FAILED${RESET}`, e);
+        preflightPassed = false;
+    }
+
+    // 2. CoinGlass API
+    try {
+        const { fetchCoinglassData } = await import('../src/services/coinglass');
+        const cg = await fetchCoinglassData('BTC-USD');
+        console.log(`${GREEN}✔ CoinGlass API: OK (BTC FR: ${(cg.fundingRate * 100).toFixed(4)}%)${RESET}`);
+    } catch (e) {
+        console.log(`${YELLOW}⚠ CoinGlass API: Degraded (will use defaults)${RESET}`);
+    }
+
+    // 3. DeFiLlama (On-Chain)
+    try {
+        const { fetchOnChainMetrics } = await import('../src/services/on-chain');
+        const oc = await fetchOnChainMetrics('global');
+        console.log(`${GREEN}✔ DeFiLlama    : OK (TVL Change: ${oc.tvlChange >= 0 ? '+' : ''}${oc.tvlChange.toFixed(2)}%)${RESET}`);
+    } catch (e) {
+        console.log(`${YELLOW}⚠ DeFiLlama    : Degraded (will use defaults)${RESET}`);
+    }
+
+    // 4. MongoDB
+    try {
+        const count = await Trade.countDocuments();
+        console.log(`${GREEN}✔ MongoDB      : OK (${count} trades in DB)${RESET}`);
+    } catch (e) {
+        console.log(`${YELLOW}⚠ MongoDB      : Degraded (trades won't persist)${RESET}`);
+    }
+
+    if (!preflightPassed) {
+        console.log(`${RED}\n⛔ CRITICAL: dYdX API failed preflight. Cannot trade safely. Exiting.${RESET}`);
+        process.exit(1);
+    }
+
+    console.log(`${GREEN}\n✅ All systems operational. Starting scan loop...${RESET}\n`);
 
     while (true) {
         try {
