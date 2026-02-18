@@ -72,8 +72,8 @@ async function handleSignals(
         } catch { /* DB not available */ }
 
         // CONFIDENCE GATE
-        if (signal.confidence <= 25) {
-            console.log(`${YELLOW}skipped (confidence ${signal.confidence}% < 25%)${RESET}`);
+        if (signal.confidence <= 40) {
+            console.log(`${YELLOW}skipped (confidence ${signal.confidence}% < 40%)${RESET}`);
             continue;
         }
 

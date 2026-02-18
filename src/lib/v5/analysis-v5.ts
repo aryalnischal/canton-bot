@@ -29,12 +29,13 @@ export function generateV5Consensus(
     fundingRate: number
 ): V5Consensus {
 
-    // ===== COINGLASS ADAPTIVE WEIGHTING =====
-    // V4 is the dominant engine (CoinGlass intelligence + technicals)
+    // ===== BALANCED ENGINE WEIGHTING =====
+    // V4 is important but V2 (trend) must always contribute
     const cgStrength = Math.abs(coinglass.smartMoneyBias);
-    const v4Weight = cgStrength > 0.5 ? 0.50 : (cgStrength > 0.3 ? 0.40 : 0.35);
-    const v2Weight = 0.75 - v4Weight - 0.25; // Remainder to V2 (trend)
-    // v4Weight: 35-50% | v3Weight: 25% | v2Weight: 0-15%
+    const v4Weight = cgStrength > 0.5 ? 0.40 : (cgStrength > 0.3 ? 0.35 : 0.30);
+    const v3Weight = 0.20; // Liquidity (fixed)
+    const v2Weight = 1.0 - v4Weight - v3Weight; // Remainder to V2 (trend): 40-50%
+    // v4Weight: 30-40% | v3Weight: 20% | v2Weight: 40-50%
 
     // 1. GATHER VOTES
 
@@ -60,7 +61,7 @@ export function generateV5Consensus(
 
     // ADAPTIVE WEIGHTS: V4 gets 35-50% based on CoinGlass conviction
     const scoreV2 = getVal(v2.action) * v2Weight;
-    const scoreV3 = getVal(v3.action) * 0.25;   // 25% (Liquidity)
+    const scoreV3 = getVal(v3.action) * v3Weight;  // 20% (Liquidity)
     const scoreV4 = getVal(v4.action) * v4Weight; // 35-50% (Neural+CG)
 
     // On-Chain Score (V5 Element)
