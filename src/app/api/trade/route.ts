@@ -52,86 +52,80 @@ export async function POST(req: Request) {
         const currentEquity = accountState ? parseFloat(accountState.equity) : 0;
         const freeCollateral = accountState ? parseFloat(accountState.freeCollateral) : 0;
 
-        // 2. GLOBAL MARGIN CHECK (Prevent Saturation)
-        if (currentEquity > 0 && freeCollateral < 20) {
+        // 2. GLOBAL MARGIN CHECK (Prevent Saturation) — skip for close orders
+        if (!body.reduceOnly && currentEquity > 0 && freeCollateral < 20) {
             console.warn(`[RISK] ⚠️ Rejecting Trade: Insufficient Free Collateral ($${freeCollateral.toFixed(2)} < $20).`);
             return NextResponse.json({ success: false, error: "Account Full (Insufficient Margin)" }, { status: 400 });
         }
 
-        // 3. Dynamic Volatility Sizing (Kelly/ATR)
-        // Fallback to $250 if API fails, or min equity
-        const equityBasis = currentEquity > 0 ? currentEquity : 250;
-        let volatility = 0.05; // Default 5%
-
-        try {
-            // Fetch Candles for ATR if not provided
-            if (body.atr) {
-                volatility = parseFloat(body.atr) / currentPriceReference;
-            } else {
-                // Fetch 20 candles for ATR
-                // Using internal client from engine (initialized)
-                // Note: we need to access `engine.client.indexerClient`.
-                // But `engine` is private? `getAccountState` suggests we can access via helper or public getter.
-                // Actually `engine` is `DydxExecutionService`. 
-                // Let's rely on simple `engine` being available and usable. 
-                // But `engine` properties are private. 
-                // Let's implement a public `getMarketCandles` on engine? 
-                // Or just simpler: Use fixed conservative size if ATR unavailable, but try to be dynamic if passed.
-                // The PROPER way is `scan/route.ts` passing ATR in body.
-                // Let's Assume `scan/route` passes it (I should update scan later too).
-                // For now, if no ATR, assume High Vol (5%) for safety.
+        // === FAST PATH FOR CLOSE (reduceOnly) ===
+        // Query actual position from dYdX and close it — don't rely on UI size
+        if (body.reduceOnly) {
+            const pos = accountState?.openPositions?.[symbol];
+            if (!pos || parseFloat(pos.size) === 0) {
+                return NextResponse.json({ success: false, error: `No open position for ${symbol}` }, { status: 400 });
             }
-        } catch (e) { console.warn("ATR Calc Failed", e); }
+            const tokenSize = Math.abs(parseFloat(pos.size));
+            const posPrice = parseFloat(pos.oraclePrice || pos.entryPrice || currentPriceReference);
+            const closeSizeUsd = tokenSize * posPrice;
+            const closeAction = parseFloat(pos.size) > 0 ? 'SELL' : 'BUY';
 
-        // Formula: Size = (Equity * RiskPercent) / Volatility
-        // Aggressive: Risk 2% of Account per trade. 
-        // If Vol is 1% (BTC), Size = 2% / 1% = 2x Equity? Too high.
-        // Let's use "Volatility Scaled" relative to baseline.
-        // Baseline: 12% Size at 2% Vol. 
-        // Size = Equity * 0.12 * (0.02 / Vol)
+            console.log(`[API] CLOSE ${symbol}: ${tokenSize} tokens × $${posPrice.toFixed(2)} = $${closeSizeUsd.toFixed(2)}`);
+            const result = await engine.executeOrder(symbol, closeAction, closeSizeUsd, posPrice, 1, true);
+
+            if (result.success) {
+                // Update DB
+                try {
+                    const { default: dbConnect } = await import('@/lib/db');
+                    const { default: Trade } = await import('@/models/Trade');
+                    await dbConnect();
+                    await Trade.updateMany(
+                        { symbol, status: 'OPEN' },
+                        { status: 'CLOSED', exitPrice: posPrice, exitTime: Date.now(), exitReason: 'Manual UI Close' }
+                    );
+                } catch (e) { console.warn('[API] DB update failed:', e); }
+                logActivity('TRADE', `Closed ${symbol} via UI ($${closeSizeUsd.toFixed(0)})`, { symbol });
+            }
+
+            isProcessing = false;
+            return NextResponse.json(result);
+        }
+
+        // === OPEN TRADE PATH ===
+        // Dynamic Volatility Sizing for new positions
+        const equityBasis = currentEquity > 0 ? currentEquity : 250;
+        let volatility = 0.05;
+        if (body.atr) {
+            volatility = parseFloat(body.atr) / currentPriceReference;
+        }
 
         const baseSizePct = 0.12;
-        const refVol = 0.02; // 2% move is "Standard"
-        const volScaler = Math.min(Math.max(refVol / (volatility || 0.05), 0.2), 2.0); // Clamp 0.2x to 2x
-
+        const refVol = 0.02;
+        const volScaler = Math.min(Math.max(refVol / (volatility || 0.05), 0.2), 2.0);
         const maxSafeSize = equityBasis * baseSizePct * volScaler;
-        console.log(`[RISK] Volatility: ${(volatility * 100).toFixed(2)}%. Scaler: ${volScaler.toFixed(2)}x. MaxSize: $${maxSafeSize.toFixed(2)}`);
 
-        // 4. Clamp
         let safeSize = size || 50;
         if (safeSize > maxSafeSize) {
-            console.log(`[RISK] Clamping Size $${safeSize} -> $${maxSafeSize.toFixed(2)} (Dynamic 12% * VolScaler)`);
+            console.log(`[RISK] Clamping Size $${safeSize} -> $${maxSafeSize.toFixed(2)}`);
             safeSize = parseFloat(maxSafeSize.toFixed(2));
         }
 
-        const result = await engine.executeOrder(
-            symbol,
-            action,
-            safeSize, // Clamped Size
-            currentPriceReference,
-            leverage || 1,
-            body.reduceOnly || false,
-            {
+        const slDist = Math.min(Math.max(volatility * 2, 0.03), 0.10);
+        const slPrice = action === 'BUY'
+            ? parseFloat((currentPriceReference * (1 - slDist)).toFixed(4))
+            : parseFloat((currentPriceReference * (1 + slDist)).toFixed(4));
 
-                // LAYERED TP (Exchange-Level Safety Net)
-                // If explicit TP provided, use it. Otherwise, pass entry price
-                // so placeTriggers() creates 3 reduce-only TP orders at +5%/+12%/+30%.
+        const result = await engine.executeOrder(
+            symbol, action, safeSize, currentPriceReference,
+            leverage || 1, false,
+            {
                 tp: body.tp ? parseFloat(body.tp) : currentPriceReference,
                 trailingPercent: body.trailingPercent,
-                sl: body.sl ? parseFloat(body.sl) : (() => {
-                    // ATR-BASED DYNAMIC SL (Volatility Adaptive)
-                    // Uses the `volatility` variable computed earlier from ATR/body.atr.
-                    // 2× vol, clamped 1.5%-8% so it adapts per-asset.
-                    const slDist = Math.min(Math.max(volatility * 2, 0.015), 0.08);
-                    console.log(`[RISK] Dynamic SL: Vol=${(volatility * 100).toFixed(2)}% → SL Distance: ${(slDist * 100).toFixed(2)}%`);
-                    return action === 'BUY'
-                        ? parseFloat((currentPriceReference * (1 - slDist)).toFixed(4))
-                        : parseFloat((currentPriceReference * (1 + slDist)).toFixed(4));
-                })()
+                sl: body.sl ? parseFloat(body.sl) : slPrice
             }
         );
 
-        // PERSISTENCE (V24): Save to MongoDB
+        // PERSISTENCE: Save to MongoDB
         if (result.success) {
             logActivity('TRADE', `${action} ${symbol} — $${safeSize.toFixed(2)} @ $${currentPriceReference}`, {
                 txHash: result.txHash, leverage: leverage || 1
@@ -140,64 +134,26 @@ export async function POST(req: Request) {
                 const { default: dbConnect } = await import('@/lib/db');
                 const { default: Trade } = await import('@/models/Trade');
                 await dbConnect();
-
-                const isClose = body.reduceOnly;
-
-                if (isClose) {
-                    const updated = await Trade.findOneAndUpdate(
-                        { symbol, status: 'OPEN' },
-                        {
-                            $set: {
-                                status: 'CLOSED',
-                                exitTime: Date.now(),
-                                exitPrice: result.filledPrice || currentPriceReference,
-                                closeTxHash: result.txHash
-                            }
-                        },
-                        { new: true }
-                    );
-
-                    if (updated) {
-                        console.log(`[DB] Trade Closed: ${symbol}`);
-                    } else {
-                        // Orphan Logic
-                        console.warn(`[DB] Close Orphan: ${symbol}`);
-                        // (Simplified orphan save logic for brevity - keeping it simple for migration)
-                        await Trade.create({
-                            id: result.txHash || `TX-${Date.now()}`,
-                            symbol, action, price: currentPriceReference, size: safeSize, leverage: 1,
-                            status: 'CLOSED', txHash: result.txHash, strategy: body.strategy,
-                            entryTime: Date.now(), exitTime: Date.now()
-                        });
+                await Trade.create({
+                    id: result.txHash || `TX-${Date.now()}`,
+                    symbol, action,
+                    price: result.filledPrice || currentPriceReference,
+                    size: result.filledSize || safeSize,
+                    leverage: leverage || 1,
+                    status: 'OPEN',
+                    txHash: result.txHash,
+                    strategy: body.strategy || 'API',
+                    sl: body.sl ? parseFloat(body.sl) : slPrice,
+                    tp: body.tp ? parseFloat(body.tp) : undefined,
+                    entryTime: Date.now(),
+                    signalSnapshot: {
+                        score: body.score,
+                        confidence: body.confidence,
+                        reasons: body.reasons || [],
+                        marketState: body.marketState
                     }
-
-                } else {
-                    // NEW OPEN
-                    await Trade.create({
-                        id: result.txHash || `TX-${Date.now()}`,
-                        symbol,
-                        action,
-                        price: result.filledPrice || currentPriceReference,
-                        size: result.filledSize || safeSize,
-                        leverage: leverage || 1,
-                        status: 'OPEN',
-                        txHash: result.txHash,
-                        strategy: body.strategy || 'API',
-                        sl: body.sl ? parseFloat(body.sl) : undefined,
-                        tp: body.tp ? parseFloat(body.tp) : undefined,
-                        entryTime: Date.now(),
-
-                        // SNAPSHOT (AI Context)
-                        signalSnapshot: {
-                            score: body.score,
-                            confidence: body.confidence,
-                            reasons: body.reasons || [],
-                            marketState: body.marketState
-                        }
-                    });
-                    console.log(`[DB] Trade Opened: ${symbol}`);
-                }
-
+                });
+                console.log(`[DB] Trade Opened: ${symbol}`);
             } catch (dbEx) {
                 console.error("[DB] Failed to Save Trade:", dbEx);
             }
