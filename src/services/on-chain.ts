@@ -61,15 +61,6 @@ async function fetchTVLChange(): Promise<number> {
     }
 }
 
-// --- Exchange Flows ---
-// Note: CoinGlass NetFlow/coins-markets endpoints require plan upgrade
-// On-chain intelligence uses DeFiLlama TVL as primary signal
-async function fetchExchangeFlows(): Promise<{ btcInflow: number; usdcInflow: number; netFlow: number }> {
-    // NetFlow endpoints not available on Hobbyist plan
-    // Return neutral — DeFiLlama TVL is our primary on-chain signal
-    return { btcInflow: 0, usdcInflow: 0, netFlow: 0 };
-}
-
 export async function fetchOnChainMetrics(symbol: string): Promise<OnChainMetrics> {
     // Check cache
     const cached = cache.get('global'); // On-chain data is global, not per-symbol
@@ -77,52 +68,21 @@ export async function fetchOnChainMetrics(symbol: string): Promise<OnChainMetric
         return cached.data;
     }
 
-    // Fetch in parallel
-    const [tvlChange, flows] = await Promise.all([
-        fetchTVLChange(),
-        fetchExchangeFlows()
-    ]);
+    // Fetch TVL (only real data source on current plan)
+    const tvlChange = await fetchTVLChange();
 
-    // --- WHALE SCORE ---
-    // Derived from net flow direction + magnitude
-    // Range: 0.0 (dumping) to 1.0 (accumulating)
-    // BTC outflow > 500 BTC = strong accumulation (0.8+)
-    // BTC inflow > 500 BTC = strong distribution (0.2-)
-    let whaleScore = 0.5; // Neutral
-    if (flows.btcInflow < -1000) whaleScore = 0.9;      // Strong accumulation
-    else if (flows.btcInflow < -500) whaleScore = 0.75;  // Moderate accumulation
-    else if (flows.btcInflow < -100) whaleScore = 0.6;   // Slight accumulation
-    else if (flows.btcInflow > 1000) whaleScore = 0.1;   // Strong distribution
-    else if (flows.btcInflow > 500) whaleScore = 0.25;   // Moderate distribution
-    else if (flows.btcInflow > 100) whaleScore = 0.4;    // Slight distribution
-
-    // --- DECISION LOGIC (Same as original, but with REAL data) ---
-    let bullScore = 0;
-    let bearScore = 0;
-
-    // Bullish Signals
-    if (flows.netFlow < -100) bullScore++;    // BTC leaving exchanges (HODLing)
-    if (whaleScore > 0.7) bullScore++;        // Whales Buying
-    if (tvlChange > 0.5) bullScore++;         // DeFi Growing
-    if (flows.usdcInflow > 100_000_000) bullScore++; // Stablecoin flowing in
-
-    // Bearish Signals
-    if (flows.netFlow > 100) bearScore++;     // BTC entering exchanges (Dumping)
-    if (whaleScore < 0.3) bearScore++;        // Whales Selling
-    if (flows.btcInflow > 500) bearScore++;   // Large BTC deposit (Dump Risk)
-    if (tvlChange < -1.0) bearScore++;        // DeFi TVL declining
-
+    // TVL-based decision (exchange flows not available on Hobbyist plan)
     const result: OnChainMetrics = {
-        netFlow: flows.netFlow,
-        whaleScore,
+        netFlow: 0,
+        whaleScore: 0.5, // Neutral — no exchange flow data available
         tvlChange,
-        btcInflow: flows.btcInflow,
-        usdcInflow: flows.usdcInflow,
-        isBullish: bullScore >= 2 && bearScore < 2,
-        isBearish: bearScore >= 2 && bullScore < 2
+        btcInflow: 0,
+        usdcInflow: 0,
+        isBullish: tvlChange > 1.0,    // DeFi growing significantly
+        isBearish: tvlChange < -1.0    // DeFi TVL declining
     };
 
-    console.log(`[ON-CHAIN] Summary: Whale=${whaleScore.toFixed(2)}, TVL=${tvlChange >= 0 ? '+' : ''}${tvlChange.toFixed(2)}%, ${result.isBullish ? '🟢 BULLISH' : result.isBearish ? '🔴 BEARISH' : '⚪ NEUTRAL'}`);
+    console.log(`[ON-CHAIN] Summary: Whale=${result.whaleScore.toFixed(2)}, TVL=${tvlChange >= 0 ? '+' : ''}${tvlChange.toFixed(2)}%, ${result.isBullish ? '🟢 BULLISH' : result.isBearish ? '🔴 BEARISH' : '⚪ NEUTRAL'}`);
 
     // Cache
     cache.set('global', { data: result, ts: Date.now() });

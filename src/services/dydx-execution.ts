@@ -14,6 +14,15 @@ import * as dotenv from 'dotenv';
 
 dotenv.config({ path: '.env.local' });
 
+// Layered TP Configuration
+// Each layer closes a fraction of the position at escalating gain levels.
+// All TP orders are reduce_only so they can never open a new position.
+const TP_LAYERS = [
+    { pct: 0.25, gain: 0.05 },  // TP1: 25% of position at +5%
+    { pct: 0.25, gain: 0.12 },  // TP2: 25% of position at +12%
+    { pct: 0.50, gain: 0.30 },  // TP3: 50% of position at +30%
+];
+
 // Types
 export interface ExecutionResult {
     success: boolean;
@@ -236,26 +245,63 @@ export class DydxExecutionService {
             }
 
             if (tpPrice) {
-                // Take Profit
+                // Layered Take Profits (3 reduce-only orders)
+                await this.placeLayeredTPs(
+                    subaccount,
+                    symbol,
+                    entryAction,
+                    size,
+                    tpPrice, // Used as reference entry price
+                    clientIdBase + 1
+                );
+            }
+        } catch (e) {
+            console.error("[DYDX] Failed to place triggers:", e);
+        }
+    }
+
+    /**
+     * Places layered TP orders that each close a fraction of the position.
+     * All orders are reduce_only — they can only shrink the position, never open a new one.
+     */
+    private async placeLayeredTPs(
+        subaccount: SubaccountClient,
+        symbol: string,
+        entryAction: 'BUY' | 'SELL',
+        totalSize: number,
+        entryPrice: number,
+        clientIdBase: number
+    ) {
+        const exitSide = entryAction === 'BUY' ? OrderSide.SELL : OrderSide.BUY;
+        const direction = entryAction === 'BUY' ? 1 : -1;
+
+        for (let i = 0; i < TP_LAYERS.length; i++) {
+            const layer = TP_LAYERS[i];
+            const triggerPrice = entryPrice * (1 + layer.gain * direction);
+            const layerSize = parseFloat((totalSize * layer.pct).toFixed(10));
+
+            if (layerSize <= 0) continue;
+
+            try {
                 await this.client?.placeOrder(
                     subaccount,
                     symbol,
                     OrderType.TAKE_PROFIT_MARKET,
                     exitSide,
-                    0, // Price
-                    size, // Size
-                    clientIdBase + 1, // Unique Client ID
+                    0, // Price (Market execution)
+                    layerSize,
+                    clientIdBase + i,
                     OrderTimeInForce.GTT,
-                    7776000, // GoodTilTimeSeconds (90 Days)
+                    7776000, // 90 Days
                     OrderExecution.IOC,
                     false,
-                    true, // reduceOnly
-                    tpPrice
+                    true, // reduceOnly — CRITICAL: only reduces, never opens
+                    parseFloat(triggerPrice.toFixed(6))
                 );
-                console.log(`[DYDX] TP Placed at ${tpPrice}`);
+                console.log(`[DYDX] TP${i + 1} Placed: ${Math.round(layer.pct * 100)}% @ $${triggerPrice.toFixed(4)} (+${Math.round(layer.gain * 100)}%)`);
+            } catch (e) {
+                console.error(`[DYDX] TP${i + 1} Failed:`, e);
             }
-        } catch (e) {
-            console.error("[DYDX] Failed to place triggers:", e);
         }
     }
 

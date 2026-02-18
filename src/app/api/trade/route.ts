@@ -113,14 +113,21 @@ export async function POST(req: Request) {
             body.reduceOnly || false,
             {
 
-                tp: body.tp ? parseFloat(body.tp) : undefined,
+                // LAYERED TP (Exchange-Level Safety Net)
+                // If explicit TP provided, use it. Otherwise, pass entry price
+                // so placeTriggers() creates 3 reduce-only TP orders at +5%/+12%/+30%.
+                tp: body.tp ? parseFloat(body.tp) : currentPriceReference,
                 trailingPercent: body.trailingPercent,
-                sl: body.sl ? parseFloat(body.sl) : (
-                    // CROSS LEVERAGE DEFAULT: -15% Safety Net
-                    action === 'BUY'
-                        ? parseFloat((currentPriceReference * 0.85).toFixed(4))
-                        : parseFloat((currentPriceReference * 1.15).toFixed(4))
-                )
+                sl: body.sl ? parseFloat(body.sl) : (() => {
+                    // ATR-BASED DYNAMIC SL (Volatility Adaptive)
+                    // Uses the `volatility` variable computed earlier from ATR/body.atr.
+                    // 2× vol, clamped 1.5%-8% so it adapts per-asset.
+                    const slDist = Math.min(Math.max(volatility * 2, 0.015), 0.08);
+                    console.log(`[RISK] Dynamic SL: Vol=${(volatility * 100).toFixed(2)}% → SL Distance: ${(slDist * 100).toFixed(2)}%`);
+                    return action === 'BUY'
+                        ? parseFloat((currentPriceReference * (1 - slDist)).toFixed(4))
+                        : parseFloat((currentPriceReference * (1 + slDist)).toFixed(4));
+                })()
             }
         );
 

@@ -1,6 +1,7 @@
 
 import type { CoinglassData } from "../../services/coinglass.ts";
 import type { OnChainMetrics } from "../../services/on-chain.ts";
+import { calculateATR, calculateRSI } from '../indicators';
 
 
 // V4 SUPER BOT CONFIG (Python Parity + CoinGlass Intelligence)
@@ -242,47 +243,3 @@ export function generateV4Signal(
     };
 }
 
-export function calculateATR(candles: { c: number, v: number, h?: number, l?: number }[], period: number) {
-    if (candles[0]?.h && candles[0]?.l) {
-        const trs: number[] = [];
-        for (let i = 1; i < candles.length; i++) {
-            const high = candles[i].h!;
-            const low = candles[i].l!;
-            const prevClose = candles[i - 1].c;
-            const tr = Math.max(high - low, Math.abs(high - prevClose), Math.abs(low - prevClose));
-            trs.push(tr);
-        }
-        if (trs.length < period) return trs.reduce((a, b) => a + b, 0) / (trs.length || 1);
-        return trs.slice(-period).reduce((a, b) => a + b, 0) / period;
-    }
-    const closes = candles.map(c => c.c).slice(-period);
-    const mean = closes.reduce((a, b) => a + b, 0) / period;
-    const variance = closes.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / period;
-    return Math.sqrt(variance);
-}
-
-function calculateRSI(closes: number[], period: number = 14): number {
-    if (closes.length < period + 1) return 50;
-    let gains = 0;
-    let losses = 0;
-    for (let i = 1; i <= period; i++) {
-        const diff = closes[i] - closes[i - 1];
-        if (diff >= 0) gains += diff;
-        else losses += Math.abs(diff);
-    }
-    let avgGain = gains / period;
-    let avgLoss = losses / period;
-    for (let i = period + 1; i < closes.length; i++) {
-        const diff = closes[i] - closes[i - 1];
-        if (diff >= 0) {
-            avgGain = (avgGain * (period - 1) + diff) / period;
-            avgLoss = (avgLoss * (period - 1)) / period;
-        } else {
-            avgGain = (avgGain * (period - 1)) / period;
-            avgLoss = (avgLoss * (period - 1) + Math.abs(diff)) / period;
-        }
-    }
-    if (avgLoss === 0) return 100;
-    const rs = avgGain / avgLoss;
-    return 100 - (100 / (1 + rs));
-}

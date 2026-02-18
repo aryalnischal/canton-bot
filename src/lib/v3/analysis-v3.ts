@@ -3,6 +3,8 @@
 // HYBRID V3 BRAIN (Grok Edition)
 // Merges "Smart Money" Sweeps with "Multi-Factor" Validation
 
+import { calculateRSI, calculateMACD } from '../indicators';
+
 export interface V3Signal {
     action: 'BUY' | 'SELL' | 'NEUTRAL';
     confidence: number;
@@ -16,92 +18,8 @@ export interface V3Signal {
     };
 }
 
-// ---------------- HELPERS ---------------- //
-
-function calculateSMA(data: number[], period: number): number[] {
-    const sma: number[] = [];
-    for (let i = 0; i < data.length; i++) {
-        if (i < period - 1) {
-            sma.push(NaN);
-            continue;
-        }
-        let sum = 0;
-        for (let j = 0; j < period; j++) {
-            sum += data[i - j];
-        }
-        sma.push(sum / period);
-    }
-    return sma;
-}
-
-function calculateEMA(data: number[], period: number): number[] {
-    const k = 2 / (period + 1);
-    const ema: number[] = [data[0]]; // Seed with first price (or SMA ideally)
-    for (let i = 1; i < data.length; i++) {
-        ema.push(data[i] * k + ema[i - 1] * (1 - k));
-    }
-    return ema;
-}
-
-function calculateRSI(closes: number[], period: number = 14): number {
-    if (closes.length < period + 1) return 50;
-
-    let gains = 0;
-    let losses = 0;
-
-    // Initial SMA
-    for (let i = 1; i <= period; i++) {
-        const diff = closes[i] - closes[i - 1];
-        if (diff > 0) gains += diff;
-        else losses -= diff;
-    }
-
-    let avgGain = gains / period;
-    let avgLoss = losses / period;
-
-    // Smoothed
-    for (let i = period + 1; i < closes.length; i++) {
-        const diff = closes[i] - closes[i - 1];
-        if (diff > 0) {
-            avgGain = (avgGain * (period - 1) + diff) / period;
-            avgLoss = (avgLoss * (period - 1)) / period;
-        } else {
-            avgGain = (avgGain * (period - 1)) / period;
-            avgLoss = (avgLoss * (period - 1) - diff) / period;
-        }
-    }
-
-    const rs = avgGain / (avgLoss || 1); // Avoid div by zero
-    return 100 - (100 / (1 + rs));
-}
-
-function calculateMACD(closes: number[]): { macd: number, signal: number, hist: number } {
-    if (closes.length < 26) return { macd: 0, signal: 0, hist: 0 };
-
-    const ema12 = calculateEMA(closes, 12);
-    const ema26 = calculateEMA(closes, 26);
-
-    // MACD Line = EMA12 - EMA26
-    const macdLine: number[] = [];
-    for (let i = 0; i < closes.length; i++) {
-        macdLine.push(ema12[i] - ema26[i]);
-    }
-
-    // Signal Line = EMA9 of MACD Line
-    // We need to slice the valid part of MACD line? EMA handles it roughly.
-    const signalLine = calculateEMA(macdLine, 9);
-
-    const currentMACD = macdLine[macdLine.length - 1];
-    const currentSignal = signalLine[signalLine.length - 1];
-
-    return {
-        macd: currentMACD,
-        signal: currentSignal,
-        hist: currentMACD - currentSignal
-    };
-}
-
 // ---------------- CORE LOGIC ---------------- //
+
 
 export function generateV3Signal(
     candles: { c: number, v: number }[],

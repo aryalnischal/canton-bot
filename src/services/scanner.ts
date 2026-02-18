@@ -73,9 +73,6 @@ export class ScannerService {
         );
 
         console.log(`[SCANNER] Found ${marketKeys.length} Valid USD markets.`);
-        if (marketKeys.length > 0) {
-            console.log("[DEBUG] Market Keys:", Object.keys(markets[marketKeys[0]]));
-        }
 
         const results: any[] = [];
 
@@ -107,12 +104,16 @@ export class ScannerService {
         console.log(`   > Top Volume (10): ${volumeTargets.join(', ')}`);
         console.log(`   > Top OI (5)     : ${oiTargets.join(', ')}`);
 
-        // FIX #4: BATCHED PARALLEL FETCHING (3 at a time)
-        const BATCH_SIZE = 3;
+        // FIX #4: BATCHED PARALLEL FETCHING (5 at a time — dYdX allows 100/10s)
+        const BATCH_SIZE = 5;
+
+        // Fetch on-chain data ONCE (it's global, not per-symbol)
+        const onChainData = await fetchOnChainMetrics('global');
+
         for (let i = 0; i < targets.length; i += BATCH_SIZE) {
             const batch = targets.slice(i, i + BATCH_SIZE);
             const batchResults = await Promise.allSettled(
-                batch.map(symbol => this._processSymbol(symbol, markets))
+                batch.map(symbol => this._processSymbol(symbol, markets, onChainData))
             );
 
             for (const result of batchResults) {
@@ -123,7 +124,7 @@ export class ScannerService {
 
             // Delay between batches (not between individual symbols)
             if (i + BATCH_SIZE < targets.length) {
-                await new Promise(r => setTimeout(r, 500));
+                await new Promise(r => setTimeout(r, 300));
             }
         }
 
@@ -139,23 +140,22 @@ export class ScannerService {
     }
 
     // Per-symbol processing (called by batch loop)
-    private async _processSymbol(symbol: string, markets: any): Promise<any | null> {
+    private async _processSymbol(symbol: string, markets: any, onChainData: any): Promise<any | null> {
         try {
-            let candles: any, imbalance: any, maxPain: any, coinglassData: any, onChainData: any;
+            let candles: any, imbalance: any, maxPain: any, coinglassData: any;
             let attempts = 0;
             let success = false;
 
             while (!success && attempts < 3) {
                 try {
-                    // Fetch ALL data in parallel — real APIs, no mocks
-                    [candles, imbalance, maxPain, coinglassData, onChainData] = await Promise.all([
+                    // Fetch per-symbol data in parallel (on-chain already fetched once)
+                    [candles, imbalance, maxPain, coinglassData] = await Promise.all([
                         (this.indexer as any).markets.getPerpetualMarketCandles(
                             symbol, '15MINS', undefined, undefined, 50
                         ),
                         getOrderbookImbalance(this.indexer, symbol),
                         calculateMaxPain(symbol).catch(() => 0),
                         fetchCoinglassData(symbol),       // REAL CoinGlass API
-                        fetchOnChainMetrics(symbol)        // REAL On-Chain Data
                     ]);
                     success = true;
                 } catch (netErr: any) {
