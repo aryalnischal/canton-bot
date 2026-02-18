@@ -18,9 +18,9 @@ dotenv.config({ path: '.env.local' });
 // Each layer closes a fraction of the position at escalating gain levels.
 // All TP orders are reduce_only so they can never open a new position.
 const TP_LAYERS = [
-    { pct: 0.25, gain: 0.015 },  // TP1: 25% of position at +1.5%
-    { pct: 0.25, gain: 0.03 },   // TP2: 25% of position at +3%
-    { pct: 0.50, gain: 0.05 },   // TP3: 50% of position at +5%
+    { pct: 0.25, gain: 0.0075 },  // TP1: 25% of position at +0.75%
+    { pct: 0.25, gain: 0.015 },   // TP2: 25% of position at +1.5%
+    { pct: 0.50, gain: 0.03 },    // TP3: 50% of position at +3%
 ];
 
 // Types
