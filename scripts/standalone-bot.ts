@@ -21,8 +21,10 @@ import { TradeAnalyzer } from '../src/services/trade-analyzer';
 const pendingSymbols = new Set<string>();
 const COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes
 const cooldownMap = new Map<string, number>(); // symbol → cooldown expiry timestamp
-const profitTierMap = new Map<string, number>(); // symbol → highest profit tier reached (1/2/3)
-const MAX_POSITIONS = 4; // Max concurrent positions (dYdX equity tier: 10 orders, ~3 per position)
+const peakPnlMap = new Map<string, number>(); // symbol → highest PnL% seen (for trailing stop)
+const TRAIL_ACTIVATION = 0.75;  // Trailing stop activates after +0.75% PnL
+const TRAIL_PERCENT = 0.40;     // Trail 40% below peak (peak 2% → floor 1.2%)
+const MAX_POSITIONS = 2; // Max concurrent positions — fewer, higher conviction
 
 // ===================================================================
 //  SIGNAL HANDLER — Process new signals and execute trades
@@ -72,8 +74,8 @@ async function handleSignals(
         } catch { /* DB not available */ }
 
         // CONFIDENCE GATE
-        if (signal.confidence <= 40) {
-            console.log(`${YELLOW}skipped (confidence ${signal.confidence}% < 40%)${RESET}`);
+        if (signal.confidence <= 60) {
+            console.log(`${YELLOW}skipped (confidence ${signal.confidence}% < 60%)${RESET}`);
             continue;
         }
 
@@ -96,7 +98,7 @@ async function executeTrade(signal: any, engine: DydxExecutionService) {
 
     console.log(`${CYAN}>>> EXECUTING ${symbol}...${RESET}`);
     pendingSymbols.add(symbol);
-    profitTierMap.delete(symbol); // Clear any stale profit tier from previous position
+    peakPnlMap.delete(symbol); // Clear any stale trailing stop data from previous position
 
     if (!price) {
         console.log(`${RED}✘ No Price for ${symbol}${RESET}`);
@@ -272,41 +274,36 @@ async function managePositions(
         console.log(`[MANAGE] ${symbol} (${isLong ? 'BUY' : 'SELL'}) PnL: ${pnlPct.toFixed(2)}% ($${uPnl.toFixed(2)})`);
 
         // ═══════════════════════════════════════════════════════════════
-        //  RATCHETING PROFIT LOCK — once profitable, lock in gains
-        //  Tier 0: No lock (pnl < 0.75%)
-        //  Tier 1: PnL crossed 0.75% → SL moves to breakeven (0%)
-        //  Tier 2: PnL crossed 1.5%  → SL locks at +1.0%
-        //  Tier 3: PnL crossed 3.0%  → SL locks at +2.0%
+        //  TRAILING STOP — lets winners run, protects profit dynamically
+        //  Activates at +0.75% PnL, then trails 40% below peak
+        //  Example: peak 2.0% → floor 1.2% | peak 5.0% → floor 3.0%
         // ═══════════════════════════════════════════════════════════════
-        const currentTier = profitTierMap.get(symbol) || 0;
-        let newTier = currentTier;
+        const prevPeak = peakPnlMap.get(symbol) || 0;
 
-        if (pnlPct >= 3.0) newTier = 3;
-        else if (pnlPct >= 1.5) newTier = Math.max(currentTier, 2);
-        else if (pnlPct >= 0.75) newTier = Math.max(currentTier, 1);
-
-        // Update tier (ratchet only goes UP, never down)
-        if (newTier > currentTier) {
-            profitTierMap.set(symbol, newTier);
-            const tierLabels = ['', 'Breakeven Lock', 'Profit Lock +1.0%', 'Profit Lock +2.0%'];
-            console.log(`${GREEN}🔒 RATCHET: ${symbol} upgraded to Tier ${newTier} (${tierLabels[newTier]})${RESET}`);
+        // Update peak (only goes up)
+        if (pnlPct > prevPeak) {
+            peakPnlMap.set(symbol, pnlPct);
+            if (pnlPct >= TRAIL_ACTIVATION && prevPeak < TRAIL_ACTIVATION) {
+                console.log(`${GREEN}📈 TRAIL ACTIVATED: ${symbol} — PnL ${pnlPct.toFixed(2)}% (trail floor: ${(pnlPct * (1 - TRAIL_PERCENT)).toFixed(2)}%)${RESET}`);
+            }
         }
 
-        // Check if price has retreated below the locked floor
-        const tier = profitTierMap.get(symbol) || 0;
-        const lockFloors = [null, 0, 1.0, 2.0]; // Tier → minimum PnL% floor
-        if (tier > 0 && lockFloors[tier] !== null && pnlPct < lockFloors[tier]!) {
-            console.log(`${YELLOW}🔒 PROFIT LOCK TRIGGERED: ${symbol} — Tier ${tier} floor at ${lockFloors[tier]}% but PnL dropped to ${pnlPct.toFixed(2)}%${RESET}`);
-            await closeAndRecord(symbol, closeSide, Math.abs(size * currentPrice), currentPrice, pnlPct, uPnl,
-                `Profit Lock (Tier ${tier}: floor ${lockFloors[tier]}%, actual ${pnlPct.toFixed(2)}%)`, engine);
-            profitTierMap.delete(symbol);
-            continue;
+        const peak = peakPnlMap.get(symbol) || 0;
+        if (peak >= TRAIL_ACTIVATION) {
+            const trailFloor = peak * (1 - TRAIL_PERCENT);
+            if (pnlPct < trailFloor) {
+                console.log(`${YELLOW}📉 TRAIL STOP: ${symbol} — Peak ${peak.toFixed(2)}% → Floor ${trailFloor.toFixed(2)}% → Actual ${pnlPct.toFixed(2)}%${RESET}`);
+                await closeAndRecord(symbol, closeSide, Math.abs(size * currentPrice), currentPrice, pnlPct, uPnl,
+                    `Trailing Stop (peak ${peak.toFixed(2)}%, floor ${trailFloor.toFixed(2)}%, actual ${pnlPct.toFixed(2)}%)`, engine);
+                peakPnlMap.delete(symbol);
+                continue;
+            }
         }
 
         // 1. SOFT STOP (-5% threshold)
         if (pnlPct < -5.0) {
             await handleSoftStop(symbol, closeSide, size, currentPrice, pnlPct, uPnl, freshSignals, engine, isLong);
-            profitTierMap.delete(symbol);
+            peakPnlMap.delete(symbol);
             continue;
         }
 
