@@ -127,7 +127,7 @@ async function executeTrade(signal: any, engine: DydxExecutionService) {
     if (signal.candles?.length >= 14) {
         const atr = calculateATR(signal.candles, 14);
         const atrPct = atr / price;
-        slDistance = Math.min(Math.max(atrPct * 2, 0.015), 0.08);
+        slDistance = Math.min(Math.max(atrPct * 2, 0.03), 0.10);
         console.log(`${YELLOW}🛡️ Dynamic SL: ATR=${(atrPct * 100).toFixed(2)}% → Distance: ${(slDistance * 100).toFixed(2)}%${RESET}`);
     }
 
