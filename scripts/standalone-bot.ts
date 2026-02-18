@@ -21,6 +21,7 @@ import { TradeAnalyzer } from '../src/services/trade-analyzer';
 const pendingSymbols = new Set<string>();
 const COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes
 const cooldownMap = new Map<string, number>(); // symbol → cooldown expiry timestamp
+const profitTierMap = new Map<string, number>(); // symbol → highest profit tier reached (1/2/3)
 const MAX_POSITIONS = 4; // Max concurrent positions (dYdX equity tier: 10 orders, ~3 per position)
 
 // ===================================================================
@@ -269,9 +270,42 @@ async function managePositions(
 
         console.log(`[MANAGE] ${symbol} (${isLong ? 'BUY' : 'SELL'}) PnL: ${pnlPct.toFixed(2)}% ($${uPnl.toFixed(2)})`);
 
+        // ═══════════════════════════════════════════════════════════════
+        //  RATCHETING PROFIT LOCK — once profitable, lock in gains
+        //  Tier 0: No lock (pnl < 0.75%)
+        //  Tier 1: PnL crossed 0.75% → SL moves to breakeven (0%)
+        //  Tier 2: PnL crossed 1.5%  → SL locks at +0.5%
+        //  Tier 3: PnL crossed 3.0%  → SL locks at +1.5%
+        // ═══════════════════════════════════════════════════════════════
+        const currentTier = profitTierMap.get(symbol) || 0;
+        let newTier = currentTier;
+
+        if (pnlPct >= 3.0) newTier = 3;
+        else if (pnlPct >= 1.5) newTier = Math.max(currentTier, 2);
+        else if (pnlPct >= 0.75) newTier = Math.max(currentTier, 1);
+
+        // Update tier (ratchet only goes UP, never down)
+        if (newTier > currentTier) {
+            profitTierMap.set(symbol, newTier);
+            const tierLabels = ['', 'Breakeven Lock', 'Profit Lock +0.5%', 'Profit Lock +1.5%'];
+            console.log(`${GREEN}🔒 RATCHET: ${symbol} upgraded to Tier ${newTier} (${tierLabels[newTier]})${RESET}`);
+        }
+
+        // Check if price has retreated below the locked floor
+        const tier = profitTierMap.get(symbol) || 0;
+        const lockFloors = [null, 0, 0.5, 1.5]; // Tier → minimum PnL% floor
+        if (tier > 0 && lockFloors[tier] !== null && pnlPct < lockFloors[tier]!) {
+            console.log(`${YELLOW}🔒 PROFIT LOCK TRIGGERED: ${symbol} — Tier ${tier} floor at ${lockFloors[tier]}% but PnL dropped to ${pnlPct.toFixed(2)}%${RESET}`);
+            await closeAndRecord(symbol, closeSide, Math.abs(size * currentPrice), currentPrice, pnlPct, uPnl,
+                `Profit Lock (Tier ${tier}: floor ${lockFloors[tier]}%, actual ${pnlPct.toFixed(2)}%)`, engine);
+            profitTierMap.delete(symbol);
+            continue;
+        }
+
         // 1. SOFT STOP (-5% threshold)
         if (pnlPct < -5.0) {
             await handleSoftStop(symbol, closeSide, size, currentPrice, pnlPct, uPnl, freshSignals, engine, isLong);
+            profitTierMap.delete(symbol);
             continue;
         }
 
