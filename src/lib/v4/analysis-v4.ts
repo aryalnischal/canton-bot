@@ -1,10 +1,10 @@
 
-import type { CoinglassData } from "../../services/coinglass-mock.ts";
-import type { OnChainMetrics } from "../../services/on-chain-mock.ts";
+import type { CoinglassData } from "../../services/coinglass.ts";
+import type { OnChainMetrics } from "../../services/on-chain.ts";
 
 
-// V4 SUPER BOT CONFIG (Python Parity)
-const FUNDING_LONG_THRESH = 0.05;   // 5% annualized (Bullish bias if exceeded?) -> Python Logic is: if funding < -0.05 (Neg) -> Long Arb.
+// V4 SUPER BOT CONFIG (Python Parity + CoinGlass Intelligence)
+const FUNDING_LONG_THRESH = 0.05;
 const FUNDING_SHORT_THRESH = -0.05;
 const VOL_THRESHOLD = 0.03;         // ATR/Price Ratio
 const TRAIL_DISTANCE = 0.015;       // 1.5% Trailing Stop
@@ -26,6 +26,11 @@ export interface V4Signal {
         atr: number;
         trendGuard: number;
         onChainBullish: boolean;
+        // NEW CoinGlass intelligence
+        smartMoneyBias: number;
+        liquidationPressure: number;
+        topTraderLSR: number;
+        takerBuySellRatio: number;
     };
     reasons: string[];
 }
@@ -34,7 +39,7 @@ export function generateV4Signal(
     candles: { c: number, v: number }[],
     orderbook: { bids: [string, string][], asks: [string, string][] } | null,
     coinglass: CoinglassData,
-    onChain: OnChainMetrics, // [NEW] On-Chain Data
+    onChain: OnChainMetrics,
     maxPainPrice: number,
     fundingRate: number
 ): V4Signal {
@@ -80,51 +85,91 @@ export function generateV4Signal(
     const sma50 = closes.slice(-50).reduce((a, b) => a + b, 0) / 50;
     const trendGuard = currentPrice > sma50 ? 1 : -1;
 
-    // 2. ENSEMBLE MODELING (Super Bot Upgrade)
-    // ----------------------------------------
+    // =============================================
+    // 2. ENSEMBLE MODELING (CoinGlass-Enhanced)
+    // =============================================
 
     // A. Neural Score (Sigmoid MLP Emulation)
     let rawScore = 0;
-    // Bullish Weights
-    if (rsi < 35) rawScore += 0.2;
-    if (volSpike) rawScore += 0.1;
-    if (liqRatio > 3.0) rawScore += 0.2;
-    if (obImbalance > 0.2) rawScore += 0.15;
-    if (maxPainDist > 0.02) rawScore += 0.1;
-    if (trendGuard > 0) rawScore += 0.1;
-    // Funding Arb: If shorts pay longs (negative funding), boost long score
-    if (fundingRate < -0.01) rawScore += 0.15;
 
-    // Bearish Weights
-    if (rsi > 65) rawScore -= 0.2;
-    if (liqRatio < 0.3) rawScore -= 0.2;
-    if (obImbalance < -0.2) rawScore -= 0.15;
-    if (maxPainDist < -0.02) rawScore -= 0.1;
-    if (trendGuard < 0) rawScore -= 0.1;
-    if (fundingRate > 0.01) rawScore -= 0.15;
+    // --- Technical Signals (weight: 0.40 total) ---
+    if (rsi < 35) rawScore += 0.15;
+    if (rsi > 65) rawScore -= 0.15;
+    if (volSpike) rawScore += 0.05;
+    if (obImbalance > 0.2) rawScore += 0.1;
+    if (obImbalance < -0.2) rawScore -= 0.1;
+    if (trendGuard > 0) rawScore += 0.05;
+    if (trendGuard < 0) rawScore -= 0.05;
+    if (maxPainDist > 0.02) rawScore += 0.05;
+    if (maxPainDist < -0.02) rawScore -= 0.05;
+
+    // --- CoinGlass Intelligence (weight: 0.40 total) ---
+
+    // Smart Money Bias (pre-computed: top traders + taker aggression + OI)
+    // This is the MOST important CoinGlass signal
+    rawScore += coinglass.smartMoneyBias * 0.20;
+
+    // Liquidation Pressure (negative = short squeeze imminent → bullish)
+    // If mostly shorts are getting liquidated, more squeezing is likely
+    rawScore -= coinglass.liquidationPressure * 0.10;
+
+    // Top Trader vs Crowd Divergence (contrarian signal)
+    // If top traders are positioned opposite to the crowd, follow smart money
+    const crowdLong = coinglass.longShortRatio > 1.2;  // Crowd is heavily long
+    const smartLong = coinglass.topTraderLSR > 1.1;    // Smart money is long
+    if (crowdLong && !smartLong) {
+        // Crowd long but smart money isn't → bearish contrarian
+        rawScore -= 0.10;
+    } else if (!crowdLong && smartLong) {
+        // Crowd not long but smart money is → bullish contrarian (follow smart money)
+        rawScore += 0.10;
+    }
+
+    // --- Funding Rate Signal (weight: 0.20 total) ---
+    // Use CoinGlass OI-weighted funding (more accurate than single-exchange)
+    const effectiveFR = coinglass.fundingRate || fundingRate;
+    if (effectiveFR < -0.01) rawScore += 0.15;   // Shorts paying longs → long signal
+    if (effectiveFR > 0.01) rawScore -= 0.15;    // Longs paying shorts → short signal
+    // Extreme funding = contrarian
+    if (effectiveFR > 0.05) rawScore -= 0.05;    // Extremely bullish funding → top signal
+    if (effectiveFR < -0.05) rawScore += 0.05;   // Extremely bearish funding → bottom signal
 
     const neuralScore = 1 / (1 + Math.exp(-rawScore * 3));
 
-    // B. Heuristic Tree Score (Gradient Boosting Emulation)
-    // Rules-based decision tree for sharp edges
-    let treeScore = 0.5; // Neutral start
+    // B. Heuristic Tree Score (Pattern Recognition)
+    let treeScore = 0.5;
 
-    // "Golden Setup": Trend + Flush + Funding
-    if (trendGuard > 0 && rsi < 40 && fundingRate < 0) treeScore = 0.9;
-    // "Death Setup": Downtrend + Pump + Funding High
-    else if (trendGuard < 0 && rsi > 60 && fundingRate > 0) treeScore = 0.1;
-    // "Chop": Low Vol + Neutral RSI
-    else if (atr / currentPrice < 0.005 && rsi > 40 && rsi < 60) treeScore = 0.5;
-    else treeScore = neuralScore; // Fallback to neural if no specific leaf hit
+    // "Golden Setup": Uptrend + Oversold + Smart Money Long + Negative Funding
+    if (trendGuard > 0 && rsi < 40 && coinglass.smartMoneyBias > 0.2 && effectiveFR < 0) {
+        treeScore = 0.95;
+    }
+    // "Smart Squeeze": Short squeeze setup (shorts liquidated + smart money long + crowd short)
+    else if (coinglass.liquidationPressure < -0.3 && smartLong && !crowdLong) {
+        treeScore = 0.85;
+    }
+    // "Death Setup": Downtrend + Overbought + Smart Money Short + Crowd Long
+    else if (trendGuard < 0 && rsi > 60 && coinglass.smartMoneyBias < -0.2 && crowdLong) {
+        treeScore = 0.1;
+    }
+    // "Long Squeeze": Longs getting crushed + smart money short
+    else if (coinglass.liquidationPressure > 0.3 && !smartLong && crowdLong) {
+        treeScore = 0.15;
+    }
+    // "Chop": Low Vol + Neutral RSI + No smart money conviction
+    else if (atr / currentPrice < 0.005 && rsi > 40 && rsi < 60 && Math.abs(coinglass.smartMoneyBias) < 0.1) {
+        treeScore = 0.5;
+    }
+    else {
+        treeScore = neuralScore; // Fallback
+    }
 
     // C. Ensemble Average
     const finalScore = (neuralScore + treeScore) / 2;
 
 
-    // 3. Dynamic Leverage & Risk (Python: lev = min(15, 15 / (1 + atr*10)))
+    // 3. Dynamic Leverage & Risk
     const atrPct = atr / currentPrice;
 
-    // Python Vol Threshold Check
     if (atrPct > VOL_THRESHOLD) {
         return { action: 'NEUTRAL', confidence: 0, leverage: 1, score: 0, features: {} as any, reasons: ["High Volatility (ATR > 3%)"] };
     }
@@ -140,14 +185,11 @@ export function generateV4Signal(
     let isBlocked = false;
     let blockReason = "";
 
-    // funding_arbitrage (Python Add-On 5)
-    // if funding < FUNDING_SHORT_THRESH (-0.05) -> LONG (Shorts paying massive fees to Longs)
     let fundingSignal = 'NEUTRAL';
-    if (fundingRate < FUNDING_SHORT_THRESH) fundingSignal = 'BUY';
-    else if (fundingRate > FUNDING_LONG_THRESH) fundingSignal = 'SELL';
+    if (effectiveFR < FUNDING_SHORT_THRESH) fundingSignal = 'BUY';
+    else if (effectiveFR > FUNDING_LONG_THRESH) fundingSignal = 'SELL';
 
     if (finalScore > 0.6 || fundingSignal === 'BUY') {
-        // Bullish Signal
         if (!onChain.isBullish && finalScore < 0.85 && fundingSignal !== 'BUY') {
             isBlocked = true;
             blockReason = "On-Chain Bearish";
@@ -155,7 +197,6 @@ export function generateV4Signal(
             action = 'BUY';
         }
     } else if (finalScore < 0.4 || fundingSignal === 'SELL') {
-        // Bearish Signal
         if (onChain.isBullish && finalScore > 0.15 && fundingSignal !== 'SELL') {
             isBlocked = true;
             blockReason = "On-Chain Bullish";
@@ -170,6 +211,12 @@ export function generateV4Signal(
         reasons.push(`⛔ ${blockReason}`);
     } else {
         reasons.push(`Liq: ${liqRatio.toFixed(1)}`);
+        if (coinglass.smartMoneyBias !== 0) {
+            reasons.push(`SmartMoney: ${coinglass.smartMoneyBias > 0 ? '🟢' : '🔴'}${coinglass.smartMoneyBias.toFixed(2)}`);
+        }
+        if (coinglass.liquidationPressure !== 0) {
+            reasons.push(`LiqPressure: ${coinglass.liquidationPressure > 0 ? 'L-Squeeze' : 'S-Squeeze'}(${Math.abs(coinglass.liquidationPressure).toFixed(2)})`);
+        }
         if (fundingSignal !== 'NEUTRAL') reasons.push(`FundArb ${fundingSignal}`);
     }
 
@@ -179,7 +226,17 @@ export function generateV4Signal(
         leverage: Math.floor(dynLev),
         score: finalScore,
         features: {
-            rsi, volSpike, liqRatio, oiChange: coinglass.oiChangePercent, funding: fundingRate, imbalance: obImbalance, macdCross: macdScore, maxPainDist, atr, trendGuard, onChainBullish: onChain.isBullish
+            rsi, volSpike, liqRatio,
+            oiChange: coinglass.oiChangePercent,
+            funding: effectiveFR,
+            imbalance: obImbalance,
+            macdCross: macdScore,
+            maxPainDist, atr, trendGuard,
+            onChainBullish: onChain.isBullish,
+            smartMoneyBias: coinglass.smartMoneyBias,
+            liquidationPressure: coinglass.liquidationPressure,
+            topTraderLSR: coinglass.topTraderLSR,
+            takerBuySellRatio: coinglass.takerBuySellRatio
         },
         reasons
     };
@@ -187,7 +244,6 @@ export function generateV4Signal(
 
 export function calculateATR(candles: { c: number, v: number, h?: number, l?: number }[], period: number) {
     if (candles[0]?.h && candles[0]?.l) {
-        // Proper ATR using True Range
         const trs: number[] = [];
         for (let i = 1; i < candles.length; i++) {
             const high = candles[i].h!;
@@ -197,10 +253,8 @@ export function calculateATR(candles: { c: number, v: number, h?: number, l?: nu
             trs.push(tr);
         }
         if (trs.length < period) return trs.reduce((a, b) => a + b, 0) / (trs.length || 1);
-        // Average of last `period` TRs
         return trs.slice(-period).reduce((a, b) => a + b, 0) / period;
     }
-    // Fallback: Standard Deviation proxy when no h/l
     const closes = candles.map(c => c.c).slice(-period);
     const mean = closes.reduce((a, b) => a + b, 0) / period;
     const variance = closes.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / period;

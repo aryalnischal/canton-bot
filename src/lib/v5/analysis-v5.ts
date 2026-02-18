@@ -2,8 +2,8 @@ import { generateTradeSignal } from "../analysis";
 import { generateV3Signal } from "../v3/analysis-v3";
 import { generateV4Signal } from "../v4/analysis-v4";
 import type { ExchangeMetric } from "../types.ts";
-import type { CoinglassData } from "../../services/coinglass-mock.ts";
-import type { OnChainMetrics } from "../../services/on-chain-mock.ts";
+import type { CoinglassData } from "../../services/coinglass.ts";
+import type { OnChainMetrics } from "../../services/on-chain.ts";
 
 export interface V5Consensus {
     action: 'BUY' | 'SELL' | 'NEUTRAL';
@@ -29,6 +29,13 @@ export function generateV5Consensus(
     fundingRate: number
 ): V5Consensus {
 
+    // ===== COINGLASS ADAPTIVE WEIGHTING =====
+    // Scale V4 weight based on CoinGlass signal conviction
+    const cgStrength = Math.abs(coinglass.smartMoneyBias);
+    const v4Weight = cgStrength > 0.5 ? 0.45 : (cgStrength > 0.3 ? 0.35 : 0.25);
+    const v2Weight = 0.80 - v4Weight - 0.30; // Remainder to V2 (trend)
+    // v2Weight ranges from 0.05 to 0.25 depending on CG conviction
+
     // 1. GATHER VOTES
 
     // V2 (Trend Guard - Conservative)
@@ -51,9 +58,10 @@ export function generateV5Consensus(
     // 2. NORMALIZE VOTES (-1, 0, 1)
     const getVal = (act: string) => act === 'BUY' ? 1 : (act === 'SELL' ? -1 : 0);
 
-    const scoreV2 = getVal(v2.action) * 0.20; // 20% Weight (Trend)
-    const scoreV3 = getVal(v3.action) * 0.30; // 30% Weight (Liquidity)
-    const scoreV4 = getVal(v4.action) * 0.30; // 30% Weight (Neural)
+    // ADAPTIVE WEIGHTS: V4 gets 25-45% based on CoinGlass conviction
+    const scoreV2 = getVal(v2.action) * v2Weight;
+    const scoreV3 = getVal(v3.action) * 0.30;   // 30% (Liquidity)
+    const scoreV4 = getVal(v4.action) * v4Weight; // 25-45% (Neural+CG)
 
     // On-Chain Score (V5 Element)
     let scoreOnChain = 0;
@@ -77,17 +85,30 @@ export function generateV5Consensus(
     let rawScore = scoreV2 + scoreV3 + scoreV4 + scoreOnChain + scoreMaxPain;
 
     // 4. VETO POWER (Risk Management)
-    // If On-Chain is RED, we cannot go Long regardless of others (unless it's a minimal score)
     const reasons: string[] = [];
     let vetoed = false;
 
+    // === COINGLASS LIQUIDATION GUARD (Highest Priority) ===
+    // Block trades going AGAINST active liquidation squeezes
+    if (coinglass.liquidationPressure > 0.7 && rawScore > 0) {
+        rawScore = 0; // BLOCK LONGS — longs are getting flushed
+        vetoed = true;
+        reasons.push(`🛡️ LIQ GUARD: Longs flushed ($${(coinglass.longLiq / 1e6).toFixed(1)}M) — blocking BUY`);
+    }
+    if (coinglass.liquidationPressure < -0.7 && rawScore < 0) {
+        rawScore = 0; // BLOCK SHORTS — shorts are getting squeezed
+        vetoed = true;
+        reasons.push(`🛡️ LIQ GUARD: Shorts squeezed ($${(coinglass.shortLiq / 1e6).toFixed(1)}M) — blocking SELL`);
+    }
+
+    // === ON-CHAIN VETO ===
     if (onChain.isBearish && rawScore > 0.2) {
-        rawScore = 0; // VETO LONG
+        rawScore = 0;
         vetoed = true;
         reasons.push("⛔ VETO: On-Chain Bearish blocks Longs");
     }
     if (onChain.isBullish && rawScore < -0.2) {
-        rawScore = 0; // VETO SHORT
+        rawScore = 0;
         vetoed = true;
         reasons.push("⛔ VETO: On-Chain Bullish blocks Shorts");
     }
@@ -105,11 +126,29 @@ export function generateV5Consensus(
     } else {
         action = rawScore > 0 ? 'BUY' : 'SELL';
 
-        // DYNAMIC LEVERAGE SCALING (Updated for Frequency)
-        if (absScore >= 0.85) leverage = 15;      // UNANIMOUS -> SNIPER STANDARD
-        else if (absScore >= 0.70) leverage = 10; // STRONG -> AGGRESSIVE
-        else if (absScore >= 0.45) leverage = 5;  // MODERATE -> STANDARD (Widened Range)
-        else leverage = 3;                        // WEAK -> ACTIVE SCALP (Was 2x)
+        // DYNAMIC LEVERAGE SCALING
+        // Default: 3x | High conviction: up to 10x max
+        if (absScore >= 0.85) leverage = 10;      // UNANIMOUS → MAX (10x)
+        else if (absScore >= 0.70) leverage = 7;  // STRONG → AGGRESSIVE
+        else if (absScore >= 0.50) leverage = 5;  // MODERATE → STANDARD
+        else leverage = 3;                        // DEFAULT → CONSERVATIVE
+
+        // === FUNDING RATE LEVERAGE MODIFIER (Crowded Trade Protection) ===
+        // If going LONG but funding is positive (longs crowded) → reduce leverage 25%
+        if (action === 'BUY' && coinglass.fundingRate > 0.01) {
+            leverage = Math.max(2, Math.ceil(leverage * 0.75));
+            reasons.push(`📉 FR: Longs crowded (${(coinglass.fundingRate * 100).toFixed(3)}%), lev reduced`);
+        }
+        // If going SHORT but funding is negative (shorts crowded) → reduce leverage 25%
+        if (action === 'SELL' && coinglass.fundingRate < -0.01) {
+            leverage = Math.max(2, Math.ceil(leverage * 0.75));
+            reasons.push(`📉 FR: Shorts crowded (${(coinglass.fundingRate * 100).toFixed(3)}%), lev reduced`);
+        }
+        // EXTREME funding → hard cap at 3x regardless
+        if (Math.abs(coinglass.fundingRate) > 0.03) {
+            leverage = Math.min(leverage, 3);
+            reasons.push(`⚠️ Extreme FR (${(coinglass.fundingRate * 100).toFixed(3)}%): Lev capped 3x`);
+        }
     }
 
     // 6. VOLATILITY GUARD (New Safety Layer)
@@ -139,8 +178,9 @@ export function generateV5Consensus(
     if (action !== 'NEUTRAL') {
         if (v2.action === action) reasons.push(`V2 Trend Aligns`);
         if (v3.action === action) reasons.push(`V3 Liquidity Aligns`);
-        if (v4.action === action) reasons.push(`V4 Neural Aligns`);
+        if (v4.action === action) reasons.push(`V4 Neural Aligns (${(v4Weight * 100).toFixed(0)}%w)`);
         if ((action === 'BUY' && onChain.isBullish) || (action === 'SELL' && onChain.isBearish)) reasons.push(`On-Chain Aligns`);
+        if (coinglass.smartMoneyBias !== 0) reasons.push(`CG SmartMoney: ${coinglass.smartMoneyBias > 0 ? '🟢' : '🔴'}${coinglass.smartMoneyBias.toFixed(2)}`);
 
         if (scoreMaxPain > 0 && action === 'BUY') reasons.push(`🧲 Max Pain Magnet (Pull UP)`);
         if (scoreMaxPain < 0 && action === 'SELL') reasons.push(`🧲 Max Pain Magnet (Pull DOWN)`);

@@ -2,7 +2,7 @@
 // HISTORICAL PROXY SERVICE
 // Simulates "Invisible" Data (Options/Liq) based on Price Action for Backtesting
 
-import type { CoinglassData } from "./coinglass-mock.ts";
+import type { CoinglassData } from "./coinglass.ts";
 
 export class HistoricalProxy {
 
@@ -35,7 +35,7 @@ export class HistoricalProxy {
     static estimateCoinglass(candles: any[], currentIndex: number): CoinglassData {
         const lookback = 4; // 1 Hour (15m * 4)
         if (currentIndex < lookback) {
-            return { longLiq: 0, shortLiq: 0, oiChangePercent: 0, longShortRatio: 1.0 };
+            return { longLiq: 0, shortLiq: 0, oiChangePercent: 0, longShortRatio: 1.0, topTraderLSR: 1.0, takerBuySellRatio: 1.0, fundingRate: 0, oiTotal: 0, smartMoneyBias: 0, liquidationPressure: 0 };
         }
 
         const currentClose = candles[currentIndex].c;
@@ -61,8 +61,14 @@ export class HistoricalProxy {
         return {
             longLiq,
             shortLiq,
-            oiChangePercent: pctChange * 100, // OI follows price trend roughly
-            longShortRatio: lsRatio
+            oiChangePercent: pctChange * 100,
+            longShortRatio: lsRatio,
+            topTraderLSR: lsRatio,
+            takerBuySellRatio: pctChange > 0 ? 1.2 : 0.8,
+            fundingRate: pctChange > 0.02 ? 0.01 : (pctChange < -0.02 ? -0.01 : 0),
+            oiTotal: 0,
+            smartMoneyBias: pctChange > 0.03 ? 0.3 : (pctChange < -0.03 ? -0.3 : 0),
+            liquidationPressure: longLiq > shortLiq ? 0.5 : (shortLiq > longLiq ? -0.5 : 0)
         };
     }
 }

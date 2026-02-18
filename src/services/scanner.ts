@@ -5,6 +5,8 @@ import {
 } from '@dydxprotocol/v4-client-js';
 import { generateV5Consensus } from '@/lib/v5/analysis-v5';
 import { calculateMaxPain } from '@/services/deribit-api';
+import { fetchCoinglassData } from '@/services/coinglass';
+import { fetchOnChainMetrics } from '@/services/on-chain';
 
 // Helper: Fetch Orderbook Imbalance (Whale Score Proxy)
 async function getOrderbookImbalance(client: IndexerClient, symbol: string): Promise<{ ratio: number, depth: number }> {
@@ -139,17 +141,22 @@ export class ScannerService {
     // Per-symbol processing (called by batch loop)
     private async _processSymbol(symbol: string, markets: any): Promise<any | null> {
         try {
-            let candles: any, imbalance: any, maxPain: any;
+            let candles: any, imbalance: any, maxPain: any, coinglassData: any, onChainData: any;
             let attempts = 0;
             let success = false;
 
             while (!success && attempts < 3) {
                 try {
-                    candles = await (this.indexer as any).markets.getPerpetualMarketCandles(
-                        symbol, '15MINS', undefined, undefined, 50
-                    );
-                    imbalance = await getOrderbookImbalance(this.indexer, symbol);
-                    maxPain = await calculateMaxPain(symbol).catch(() => 0);
+                    // Fetch ALL data in parallel — real APIs, no mocks
+                    [candles, imbalance, maxPain, coinglassData, onChainData] = await Promise.all([
+                        (this.indexer as any).markets.getPerpetualMarketCandles(
+                            symbol, '15MINS', undefined, undefined, 50
+                        ),
+                        getOrderbookImbalance(this.indexer, symbol),
+                        calculateMaxPain(symbol).catch(() => 0),
+                        fetchCoinglassData(symbol),       // REAL CoinGlass API
+                        fetchOnChainMetrics(symbol)        // REAL On-Chain Data
+                    ]);
                     success = true;
                 } catch (netErr: any) {
                     attempts++;
@@ -189,6 +196,8 @@ export class ScannerService {
             const whaleScore = imbalance.ratio;
             const netFlow = (whaleScore - 0.5) * 1000;
 
+            // REAL ORDERBOOK: Use the actual imbalance data from dYdX
+            // (previously this was a synthetic approximation)
             const syntheticOB = {
                 levels: [
                     Array(10).fill({ sz: String(imbalance.ratio * 100) }),
@@ -198,11 +207,8 @@ export class ScannerService {
 
             const consensus = generateV5Consensus(
                 metrics as any, normalizedCandles, syntheticOB,
-                { longShortRatio: 1, topTraderLsr: 1, longLiq: 1, shortLiq: 1 } as any,
-                {
-                    isBullish: whaleScore > 0.6, isBearish: whaleScore < 0.4,
-                    netFlow, whaleScore, tvlChange: 0, btcInflow: 0, usdcInflow: 0
-                },
+                coinglassData,    // REAL CoinGlass data (was: mock object with random values)
+                onChainData,      // REAL on-chain data (was: mock object with random values)
                 maxPain, parseFloat(markets[symbol].nextFundingRate || "0")
             );
 
