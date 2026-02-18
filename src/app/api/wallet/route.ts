@@ -51,10 +51,16 @@ export async function GET() {
                     szi: signedSize.toString(),
                     entryPx: pos.entryPrice,
                     unrealizedPnl: pos.unrealizedPnl || 0,
-                    leverage: { type: 'cross', value: 20 },
-                    // [NEW] Context
+                    leverage: dbMatch?.leverage || 3,
+                    // Context from trade signal
                     reasoning: reasoning,
-                    score: score
+                    score: score,
+                    confidence: dbMatch?.signalSnapshot?.confidence || 0,
+                    action: dbMatch?.action || (signedSize > 0 ? 'BUY' : 'SELL'),
+                    market: market,
+                    side: signedSize > 0 ? 'LONG' : 'SHORT',
+                    oraclePrice: pos.entryPrice,
+                    size: pos.size,
                 }
             };
         });

@@ -159,6 +159,8 @@ export function SignalScanner() {
                         <thead className="bg-white/5 uppercase text-[10px] text-zinc-400 tracking-wider">
                             <tr>
                                 <th className="p-3">Asset</th>
+                                <th className="p-3 text-center">Direction</th>
+                                <th className="p-3 text-center">Leverage</th>
                                 <th className="p-3 text-right">Size</th>
                                 <th className="p-3 text-right">Entry</th>
                                 <th className="p-3 text-right">PnL</th>
@@ -168,7 +170,7 @@ export function SignalScanner() {
                         </thead>
                         <tbody className="divide-y divide-white/5">
                             {activePositions.length === 0 ? (
-                                <tr><td colSpan={6} className="p-6 text-center text-zinc-600 italic">No Active Positions</td></tr>
+                                <tr><td colSpan={8} className="p-6 text-center text-zinc-600 italic">No Active Positions</td></tr>
                             ) : (
                                 activePositions.map((item: any, i: number) => {
                                     const p = item.position || item; // Handle nested structure
@@ -178,22 +180,35 @@ export function SignalScanner() {
 
                                     // Reasoning Context
                                     const score = p.score || 0;
+                                    const confidence = p.confidence || 0;
+                                    const leverage = typeof p.leverage === 'object' ? p.leverage.value : (p.leverage || '—');
                                     const reasons = p.reasoning || [];
                                     const reasonText = reasons.slice(0, 2).join(", ") + (reasons.length > 2 ? "..." : "");
 
                                     return (
                                         <tr key={i} className="hover:bg-white/5">
                                             <td className="p-3 font-bold text-white">
-                                                {p.coin} <span className={`text-[10px] px-1 rounded ${isLong ? "text-emerald-400 bg-emerald-500/10" : "text-red-400 bg-red-500/10"}`}>{isLong ? "LONG" : "SHORT"}</span>
+                                                {p.coin}
                                             </td>
-                                            <td className="p-3 text-right font-mono text-zinc-300">{size.toFixed(3)}</td>
+                                            <td className="p-3 text-center">
+                                                <span className={`inline-block px-2 py-0.5 rounded font-bold text-xs ${isLong ? "text-emerald-400 bg-emerald-500/15 border border-emerald-500/30" : "text-red-400 bg-red-500/15 border border-red-500/30"}`}>
+                                                    {isLong ? "⬆ LONG" : "⬇ SHORT"}
+                                                </span>
+                                            </td>
+                                            <td className="p-3 text-center">
+                                                <span className="font-mono font-bold text-amber-400">{leverage}x</span>
+                                            </td>
+                                            <td className="p-3 text-right font-mono text-zinc-300">{Math.abs(size).toFixed(3)}</td>
                                             <td className="p-3 text-right font-mono text-zinc-300">${parseFloat(p.entryPx).toFixed(2)}</td>
                                             <td className={`p-3 text-right font-mono font-bold ${p.unrealizedPnl >= 0 ? "text-emerald-400" : "text-red-400"}`}>
                                                 ${parseFloat(p.unrealizedPnl || 0).toFixed(2)}
                                             </td>
-                                            <td className="p-3 text-left text-xs text-zinc-400 max-w-[200px] truncate">
-                                                {score !== 0 && <span className="font-bold text-zinc-300 mr-2">Score:{score.toFixed(1)}</span>}
-                                                <span title={reasons.join("\n")}>{reasonText || "Manual / Legacy"}</span>
+                                            <td className="p-3 text-left text-xs text-zinc-400 max-w-[250px]">
+                                                <div className="flex items-center gap-2 mb-0.5">
+                                                    {score !== 0 && <span className="font-bold text-zinc-300">Score:{score.toFixed(1)}</span>}
+                                                    {confidence > 0 && <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-400 border border-blue-500/30 font-mono">{confidence}%</span>}
+                                                </div>
+                                                <span className="truncate block" title={reasons.join("\n")}>{reasonText || "Manual / Legacy"}</span>
                                             </td>
                                             <td className="p-3 text-right">
                                                 <button onClick={() => closePosition(p)} className="text-[10px] border border-zinc-700 hover:bg-zinc-800 px-2 py-1 rounded text-zinc-300">Close</button>
