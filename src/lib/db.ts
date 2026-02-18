@@ -27,6 +27,15 @@ async function dbConnect() {
     if (!cached.promise) {
         const opts = {
             bufferCommands: false, // Disable buffer to fail fast
+            serverApi: {
+                version: '1' as const,
+                strict: true,
+                deprecationErrors: true,
+            },
+            tls: true,
+            tlsAllowInvalidCertificates: false,
+            serverSelectionTimeoutMS: 15000,
+            connectTimeoutMS: 15000,
         };
 
         cached.promise = mongoose.connect(MONGODB_URI, opts).then((mongoose) => {
