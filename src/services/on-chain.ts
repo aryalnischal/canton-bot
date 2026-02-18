@@ -82,9 +82,9 @@ export async function fetchOnChainMetrics(symbol: string): Promise<OnChainMetric
         isBearish: tvlChange < -1.0    // DeFi TVL declining
     };
 
-    console.log(`[ON-CHAIN] Summary: Whale=${result.whaleScore.toFixed(2)}, TVL=${tvlChange >= 0 ? '+' : ''}${tvlChange.toFixed(2)}%, ${result.isBullish ? '🟢 BULLISH' : result.isBearish ? '🔴 BEARISH' : '⚪ NEUTRAL'}`);
+    // Only log on fresh fetch (cached results are silent)
+    console.log(`[ON-CHAIN] TVL: ${tvlChange >= 0 ? '+' : ''}${tvlChange.toFixed(2)}% → ${result.isBullish ? '🟢 BULLISH' : result.isBearish ? '🔴 BEARISH' : '⚪ NEUTRAL'}`);
 
-    // Cache
     cache.set('global', { data: result, ts: Date.now() });
     return result;
 }

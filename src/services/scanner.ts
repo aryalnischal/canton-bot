@@ -104,8 +104,8 @@ export class ScannerService {
         console.log(`   > Top Volume (10): ${volumeTargets.join(', ')}`);
         console.log(`   > Top OI (5)     : ${oiTargets.join(', ')}`);
 
-        // FIX #4: BATCHED PARALLEL FETCHING (5 at a time — dYdX allows 100/10s)
-        const BATCH_SIZE = 5;
+        // BATCHED PARALLEL FETCHING (3 at a time — conservative for dYdX rate limits)
+        const BATCH_SIZE = 3;
 
         // Fetch on-chain data ONCE (it's global, not per-symbol)
         const onChainData = await fetchOnChainMetrics('global');
@@ -124,7 +124,7 @@ export class ScannerService {
 
             // Delay between batches (not between individual symbols)
             if (i + BATCH_SIZE < targets.length) {
-                await new Promise(r => setTimeout(r, 300));
+                await new Promise(r => setTimeout(r, 1000));
             }
         }
 
