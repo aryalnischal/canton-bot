@@ -103,14 +103,23 @@ async function executeTrade(signal: any, engine: DydxExecutionService) {
     }
 
     // DYNAMIC LEVERAGE
-    const BASE_COLLATERAL = 50;
     let targetLeverage = 3; // Default: 3x
     if (signal.confidence > 85) { targetLeverage = 10; console.log(`${GREEN}🚀🚀 MAX (${signal.confidence}%): 10x${RESET}`); }
     else if (signal.confidence > 77) { targetLeverage = 8; console.log(`${GREEN}🚀 HIGH (${signal.confidence}%): 8x${RESET}`); }
     else if (signal.confidence > 70) { targetLeverage = 5; console.log(`${GREEN}⚡ STRONG (${signal.confidence}%): 5x${RESET}`); }
     else { console.log(`${YELLOW}⚡ STANDARD (${signal.confidence}%): 3x${RESET}`); }
 
-    const size = BASE_COLLATERAL * targetLeverage;
+    // DYNAMIC POSITION SIZING — use actual free collateral, not fixed $50
+    const acctState = await engine.getAccountState();
+    const freeCol = parseFloat(acctState?.freeCollateral || '0');
+    const baseCollateral = Math.floor(freeCol / MAX_POSITIONS);
+    if (baseCollateral < 5) {
+        console.log(`${RED}✘ Insufficient free collateral ($${freeCol.toFixed(2)}). Need at least $${MAX_POSITIONS * 5}.${RESET}`);
+        pendingSymbols.delete(symbol);
+        return;
+    }
+    const size = baseCollateral * targetLeverage;
+    console.log(`${YELLOW}💰 Collateral: $${baseCollateral} × ${targetLeverage}x = $${size} notional${RESET}`);
     const tpPrice = isBuy ? price * 1.015 : price * 0.985;
 
     // ATR-BASED STOP LOSS
