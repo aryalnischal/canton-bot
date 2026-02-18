@@ -4,6 +4,7 @@ dotenv.config({ path: '.env.local' });
 
 import { DydxExecutionService } from '../src/services/dydx-execution';
 import { ScannerService } from '../src/services/scanner';
+import { calculateATR } from '../src/lib/indicators';
 
 // ANSI Colors
 const CYAN = '\x1b[36m';
@@ -41,6 +42,11 @@ async function main() {
     // We use a local Set to block immediate re-entry.
     const pendingSymbols = new Set<string>();
 
+    // COOLDOWN: 30-minute cooloff after a trade closes on a symbol
+    // Prevents re-entering the same asset immediately after close
+    const COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes
+    const cooldownMap = new Map<string, number>(); // symbol → timestamp of close
+
     while (true) {
         try {
             console.log(`\n-----------------------------------------`);
@@ -69,7 +75,14 @@ async function main() {
                     const isPending = pendingSymbols.has(symbol);
 
                     if (isAlreadyOpen || isPending) {
-                        // console.log(`[SKIP] ${symbol} - Already Active/Pending`);
+                        continue;
+                    }
+
+                    // COOLDOWN GUARD (30min after last close)
+                    const cooldownUntil = cooldownMap.get(symbol);
+                    if (cooldownUntil && Date.now() < cooldownUntil) {
+                        const minsLeft = ((cooldownUntil - Date.now()) / 60000).toFixed(0);
+                        console.log(`${YELLOW}⏳ COOLDOWN: ${symbol} — ${minsLeft}min remaining before re-entry${RESET}`);
                         continue;
                     }
 
@@ -148,6 +161,21 @@ async function main() {
                         const size = BASE_COLLATERAL * targetLeverage; // $150 to $500
 
                         try {
+                            // DYNAMIC ATR-BASED STOP LOSS
+                            // Adapts to each asset's actual volatility:
+                            // - BTC (~1.5% daily range) → ~3% SL
+                            // - HYPE/alts (~6% range)   → ~8% SL (capped)
+                            // Uses 2× ATR so normal volatility doesn't trigger the SL.
+                            let slDistance = 0.05; // Fallback: 5%
+                            if (signal.candles && signal.candles.length >= 14) {
+                                const atr = calculateATR(signal.candles, 14);
+                                const atrPct = atr / price;
+                                slDistance = Math.min(Math.max(atrPct * 2, 0.015), 0.08); // 2×ATR, clamped 1.5%-8%
+                                console.log(`${YELLOW}🛡️ Dynamic SL: ATR=$${atr.toFixed(4)} (${(atrPct * 100).toFixed(2)}%) → SL Distance: ${(slDistance * 100).toFixed(2)}%${RESET}`);
+                            } else {
+                                console.log(`${YELLOW}🛡️ SL: No candle data, using fallback 5%${RESET}`);
+                            }
+
                             const res = await engine.executeOrder(
                                 signal.symbol,
                                 signal.action as 'BUY' | 'SELL',
@@ -156,15 +184,15 @@ async function main() {
                                 targetLeverage, // Leverage (Informational for generic engines, effectively Size/Collateral)
                                 false, // ReduceOnly
                                 {
-                                    // HARD STOP LOSS (Safety Net)
-                                    // CROSS LEVERAGE SAFETY STOP
-                                    // We allow the trade to breathe (Cross Margin benefits).
-                                    // Hard Stop at -15% price move to prevent total blow-up.
+                                    // ATR-BASED STOP LOSS (Volatility Adaptive)
                                     sl: isBuy
-                                        ? parseFloat((price * 0.85).toFixed(4))
-                                        : parseFloat((price * 1.15).toFixed(4)),
+                                        ? parseFloat((price * (1 - slDistance)).toFixed(4))
+                                        : parseFloat((price * (1 + slDistance)).toFixed(4)),
 
-                                    // tp: undefined (We use Market Close logic)
+                                    // LAYERED TP (Exchange-Level Safety Net)
+                                    // Pass entry price so placeTriggers() creates 3 reduce-only
+                                    // TP orders at +5%/+12%/+30% (25%/25%/50% of position).
+                                    tp: price,
                                 }
                             );
 
@@ -250,8 +278,10 @@ async function main() {
                         t.status = 'CLOSED';
                         t.exitReason = 'Limit/External Close (Reconciled)';
                         t.exitTime = Date.now();
-                        // t.exitPrice = ??? (Unknown without fill fetch)
                         await t.save();
+                        // Start 30min cooldown
+                        cooldownMap.set(t.symbol, Date.now() + COOLDOWN_MS);
+                        console.log(`${YELLOW}⏳ ${t.symbol} cooldown started (30min)${RESET}`);
                     }
                 }
             }
@@ -343,6 +373,9 @@ async function main() {
                                     pnlPercent: pnlPct
                                 }
                             );
+                            // Start 30min cooldown
+                            cooldownMap.set(symbol, Date.now() + COOLDOWN_MS);
+                            console.log(`${YELLOW}⏳ ${symbol} cooldown started (30min)${RESET}`);
                         }
                     }
 
@@ -406,6 +439,9 @@ async function main() {
                                     pnlPercent: pnlPct
                                 }
                             );
+                            // Start 30min cooldown
+                            cooldownMap.set(symbol, Date.now() + COOLDOWN_MS);
+                            console.log(`${YELLOW}⏳ ${symbol} cooldown started (30min)${RESET}`);
                         }
                     }
 
@@ -438,6 +474,9 @@ async function main() {
                                     pnlPercent: pnlPct
                                 }
                             );
+                            // Start 30min cooldown
+                            cooldownMap.set(symbol, Date.now() + COOLDOWN_MS);
+                            console.log(`${YELLOW}⏳ ${symbol} cooldown started (30min)${RESET}`);
                         }
                     }
                 }
