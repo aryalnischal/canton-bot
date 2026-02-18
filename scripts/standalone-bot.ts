@@ -123,6 +123,10 @@ async function executeTrade(signal: any, engine: DydxExecutionService) {
         console.log(`${YELLOW}🛡️ Dynamic SL: ATR=${(atrPct * 100).toFixed(2)}% → Distance: ${(slDistance * 100).toFixed(2)}%${RESET}`);
     }
 
+    // Snapshot position BEFORE order
+    const preAccount = await engine.getAccountState();
+    const prePosSize = Math.abs(parseFloat(preAccount?.openPositions?.[symbol]?.size || '0'));
+
     try {
         const res = await engine.executeOrder(
             symbol, action, size, price, targetLeverage, false,
@@ -137,19 +141,20 @@ async function executeTrade(signal: any, engine: DydxExecutionService) {
         if (res.success) {
             console.log(`${GREEN}✔ ORDER SUBMITTED: ${res.txHash} ($${size}, ${targetLeverage}x)${RESET}`);
 
-            // FILL VERIFICATION: Wait 3s then check if position actually exists on dYdX
+            // FILL VERIFICATION: Wait 3s then compare position size before vs after
             await new Promise(r => setTimeout(r, 3000));
             const postAccount = await engine.getAccountState();
             const pos = postAccount?.openPositions?.[symbol];
-            const posSize = pos ? parseFloat(pos.size) : 0;
+            const postPosSize = Math.abs(parseFloat(pos?.size || '0'));
 
-            if (posSize === 0) {
-                console.log(`${RED}✘ FILL REJECTED: ${symbol} — no position on dYdX (margin/tier limit). Skipping DB save.${RESET}`);
+            // Check if position actually CHANGED (not just pre-existing dust)
+            if (postPosSize <= prePosSize) {
+                console.log(`${RED}✘ FILL REJECTED: ${symbol} — position unchanged (pre: ${prePosSize}, post: ${postPosSize}). Skipping DB save.${RESET}`);
                 pendingSymbols.delete(symbol);
                 return;
             }
 
-            console.log(`${GREEN}✔ FILL CONFIRMED: ${symbol} size=${posSize}${RESET}`);
+            console.log(`${GREEN}✔ FILL CONFIRMED: ${symbol} size=${pos!.size} (was ${prePosSize})${RESET}`);
             setTimeout(() => pendingSymbols.delete(symbol), 30000);
 
             try {
@@ -157,7 +162,7 @@ async function executeTrade(signal: any, engine: DydxExecutionService) {
                     id: res.txHash || `TX-${Date.now()}`,
                     symbol, action,
                     price: parseFloat(pos.entryPrice) || res.filledPrice || price,
-                    size: Math.abs(posSize),
+                    size: Math.abs(postPosSize),
                     leverage: targetLeverage,
                     status: 'OPEN',
                     txHash: res.txHash,
