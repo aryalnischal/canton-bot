@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Activity, Clock, Shield, TrendingUp, Radio } from "lucide-react";
+import { Activity, Clock, Shield, TrendingUp, Radio, History } from "lucide-react";
 
 import { generateTradeSignal, ManualAnalysisData } from "@/lib/analysis";
 
@@ -27,6 +27,13 @@ export function SignalScanner() {
 
     // ACTIVITY FEED
     const [activityFeed, setActivityFeed] = useState<any[]>([]);
+
+    // TRADE HISTORY
+    const [tradeHistory, setTradeHistory] = useState<any[]>([]);
+    const [historyStats, setHistoryStats] = useState<any>({ total: 0, wins: 0, losses: 0, winRate: 0, totalPnl: 0 });
+    const [historyFilter, setHistoryFilter] = useState('7d'); // 'today', '7d', '30d', 'all', 'custom'
+    const [customFrom, setCustomFrom] = useState('');
+    const [customTo, setCustomTo] = useState('');
 
     // 1. POLL WALLET & MARKET SCAN (Unified)
     useEffect(() => {
@@ -66,10 +73,38 @@ export function SignalScanner() {
             } catch (e) { console.error("Sync Error", e); }
         };
 
+        const fetchHistory = async () => {
+            try {
+                let params = '';
+                const now = Date.now();
+                if (historyFilter === 'today') {
+                    const startOfDay = new Date();
+                    startOfDay.setHours(0, 0, 0, 0);
+                    params = `?from=${startOfDay.getTime()}`;
+                } else if (historyFilter === '7d') {
+                    params = `?from=${now - 7 * 86400000}`;
+                } else if (historyFilter === '30d') {
+                    params = `?from=${now - 30 * 86400000}`;
+                } else if (historyFilter === 'custom' && customFrom) {
+                    params = `?from=${new Date(customFrom).getTime()}`;
+                    if (customTo) params += `&to=${new Date(customTo + 'T23:59:59').getTime()}`;
+                }
+                // 'all' → no params
+                const hRes = await fetch(`/api/trade/history${params}`);
+                const hData = await hRes.json();
+                if (hData.success) {
+                    setTradeHistory(hData.trades);
+                    setHistoryStats(hData.stats);
+                }
+            } catch (e) { console.error('History fetch error', e); }
+        };
+
         sync();
-        const timer = setInterval(sync, 15000); // 15s Refresh
-        return () => clearInterval(timer);
-    }, []);
+        fetchHistory();
+        const timer = setInterval(sync, 15000);
+        const historyTimer = setInterval(fetchHistory, 30000); // 30s for history
+        return () => { clearInterval(timer); clearInterval(historyTimer); };
+    }, [historyFilter, customFrom, customTo]);
 
     const closePosition = async (p: any) => {
         const symbol = p.market || p.ticker || p.symbol;
@@ -293,6 +328,123 @@ export function SignalScanner() {
                             })}
                         </div>
                     )}
+                </div>
+            </div>
+
+            {/* TRADE HISTORY */}
+            <div className="rounded-xl border border-zinc-800 bg-zinc-950/50 overflow-hidden shadow-xl">
+                <div className="p-4 border-b border-zinc-800 bg-zinc-900/50">
+                    <div className="flex justify-between items-center mb-3">
+                        <h3 className="font-semibold text-sm flex items-center gap-2 text-zinc-200">
+                            <History className="h-4 w-4 text-purple-400" /> Trade History
+                        </h3>
+                        <span className="text-[10px] font-mono text-zinc-500">{historyStats.total} trades</span>
+                    </div>
+                    {/* Filter Buttons */}
+                    <div className="flex items-center gap-2 flex-wrap">
+                        {['today', '7d', '30d', 'all'].map(f => (
+                            <button key={f} onClick={() => setHistoryFilter(f)}
+                                className={`text-[10px] px-2.5 py-1 rounded font-bold uppercase tracking-wider transition-colors ${historyFilter === f
+                                        ? 'bg-purple-500/20 text-purple-400 border border-purple-500/40'
+                                        : 'bg-zinc-800/50 text-zinc-500 border border-zinc-700/50 hover:text-zinc-300'
+                                    }`}>
+                                {f === 'today' ? 'Today' : f === '7d' ? '7 Days' : f === '30d' ? '30 Days' : 'All Time'}
+                            </button>
+                        ))}
+                        <button onClick={() => setHistoryFilter('custom')}
+                            className={`text-[10px] px-2.5 py-1 rounded font-bold uppercase tracking-wider transition-colors ${historyFilter === 'custom'
+                                    ? 'bg-purple-500/20 text-purple-400 border border-purple-500/40'
+                                    : 'bg-zinc-800/50 text-zinc-500 border border-zinc-700/50 hover:text-zinc-300'
+                                }`}>
+                            Custom
+                        </button>
+                        {historyFilter === 'custom' && (
+                            <div className="flex items-center gap-2 ml-2">
+                                <input type="date" value={customFrom} onChange={e => setCustomFrom(e.target.value)}
+                                    className="text-[10px] bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-zinc-300 font-mono" />
+                                <span className="text-zinc-600 text-[10px]">→</span>
+                                <input type="date" value={customTo} onChange={e => setCustomTo(e.target.value)}
+                                    className="text-[10px] bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-zinc-300 font-mono" />
+                            </div>
+                        )}
+                    </div>
+                </div>
+
+                {/* Summary Stats */}
+                <div className="grid grid-cols-5 gap-px bg-zinc-800/50">
+                    <div className="bg-zinc-950/80 p-3 text-center">
+                        <div className="text-[10px] text-zinc-500 uppercase tracking-wider">Total</div>
+                        <div className="text-sm font-bold text-white font-mono">{historyStats.total}</div>
+                    </div>
+                    <div className="bg-zinc-950/80 p-3 text-center">
+                        <div className="text-[10px] text-zinc-500 uppercase tracking-wider">Wins</div>
+                        <div className="text-sm font-bold text-emerald-400 font-mono">{historyStats.wins}</div>
+                    </div>
+                    <div className="bg-zinc-950/80 p-3 text-center">
+                        <div className="text-[10px] text-zinc-500 uppercase tracking-wider">Losses</div>
+                        <div className="text-sm font-bold text-red-400 font-mono">{historyStats.losses}</div>
+                    </div>
+                    <div className="bg-zinc-950/80 p-3 text-center">
+                        <div className="text-[10px] text-zinc-500 uppercase tracking-wider">Win Rate</div>
+                        <div className={`text-sm font-bold font-mono ${historyStats.winRate >= 50 ? 'text-emerald-400' : 'text-red-400'}`}>{historyStats.winRate}%</div>
+                    </div>
+                    <div className="bg-zinc-950/80 p-3 text-center">
+                        <div className="text-[10px] text-zinc-500 uppercase tracking-wider">Total PnL</div>
+                        <div className={`text-sm font-bold font-mono ${historyStats.totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                            {historyStats.totalPnl >= 0 ? '+' : ''}${historyStats.totalPnl.toFixed(2)}
+                        </div>
+                    </div>
+                </div>
+
+                {/* Trade Table */}
+                <div className="overflow-x-auto max-h-[400px] overflow-y-auto">
+                    <table className="w-full text-sm text-left">
+                        <thead className="bg-white/5 uppercase text-[10px] text-zinc-400 tracking-wider sticky top-0 bg-zinc-900">
+                            <tr>
+                                <th className="p-3">Date</th>
+                                <th className="p-3">Asset</th>
+                                <th className="p-3 text-center">Direction</th>
+                                <th className="p-3 text-center">Lev</th>
+                                <th className="p-3 text-right">Entry</th>
+                                <th className="p-3 text-right">Exit</th>
+                                <th className="p-3 text-right">PnL</th>
+                                <th className="p-3 text-left">Reason</th>
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-white/5">
+                            {tradeHistory.length === 0 ? (
+                                <tr><td colSpan={8} className="p-6 text-center text-zinc-600 italic">No closed trades in this period</td></tr>
+                            ) : (
+                                tradeHistory.map((t: any, i: number) => {
+                                    const isLong = t.action === 'BUY';
+                                    const exitDate = t.exitTime ? new Date(t.exitTime) : null;
+                                    return (
+                                        <tr key={i} className="hover:bg-white/5">
+                                            <td className="p-3 text-[11px] font-mono text-zinc-400">
+                                                {exitDate ? `${exitDate.toLocaleDateString()} ${exitDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : '—'}
+                                            </td>
+                                            <td className="p-3 font-bold text-white">{t.symbol?.split('-')[0]}</td>
+                                            <td className="p-3 text-center">
+                                                <span className={`inline-block px-2 py-0.5 rounded font-bold text-[10px] ${isLong ? 'text-emerald-400 bg-emerald-500/15 border border-emerald-500/30' : 'text-red-400 bg-red-500/15 border border-red-500/30'}`}>
+                                                    {isLong ? '⬆ LONG' : '⬇ SHORT'}
+                                                </span>
+                                            </td>
+                                            <td className="p-3 text-center font-mono font-bold text-amber-400">{t.leverage || '—'}x</td>
+                                            <td className="p-3 text-right font-mono text-zinc-300">${t.entryPrice?.toFixed(2)}</td>
+                                            <td className="p-3 text-right font-mono text-zinc-300">{t.exitPrice ? `$${t.exitPrice.toFixed(2)}` : '—'}</td>
+                                            <td className={`p-3 text-right font-mono font-bold ${t.pnlValue >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                                                {t.pnlValue >= 0 ? '+' : ''}${t.pnlValue?.toFixed(2) || '0.00'}
+                                                <span className="text-[10px] text-zinc-500 ml-1">({t.pnlPercent?.toFixed(1) || '0'}%)</span>
+                                            </td>
+                                            <td className="p-3 text-left text-[11px] text-zinc-500 max-w-[150px] truncate" title={t.exitReason}>
+                                                {t.exitReason || '—'}
+                                            </td>
+                                        </tr>
+                                    );
+                                })
+                            )}
+                        </tbody>
+                    </table>
                 </div>
             </div>
 
