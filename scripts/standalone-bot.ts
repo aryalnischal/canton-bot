@@ -21,7 +21,7 @@ import { TradeAnalyzer } from '../src/services/trade-analyzer';
 const pendingSymbols = new Set<string>();
 const COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes
 const cooldownMap = new Map<string, number>(); // symbol → cooldown expiry timestamp
-const MAX_POSITIONS = 3; // Max concurrent positions (dYdX equity tier: 10 orders, ~3 per position)
+const MAX_POSITIONS = 4; // Max concurrent positions (dYdX equity tier: 10 orders, ~3 per position)
 
 // ===================================================================
 //  SIGNAL HANDLER — Process new signals and execute trades
