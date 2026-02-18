@@ -131,7 +131,7 @@ export class ScannerService {
         // Filter and Sort by Score
         // Threshold: 0.4 (Active Scalp level)
         const signals = results
-            .filter(r => Math.abs(r.score) > 0.4)
+            .filter(r => Math.abs(r.score) >= 0.20)
             .sort((a, b) => b.score - a.score);
 
         const payload = { markets: results, signals };

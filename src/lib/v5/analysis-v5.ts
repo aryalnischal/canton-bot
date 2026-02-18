@@ -119,7 +119,7 @@ export function generateV5Consensus(
 
     const absScore = Math.abs(rawScore);
 
-    if (absScore < 0.25) {
+    if (absScore < 0.15) {
         action = 'NEUTRAL';
         leverage = 0;
         reasons.push("Low Consensus");

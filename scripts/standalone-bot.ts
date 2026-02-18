@@ -61,8 +61,8 @@ async function handleSignals(
         } catch { /* DB not available */ }
 
         // CONFIDENCE GATE
-        if (signal.confidence <= 45) {
-            console.log(`${YELLOW}skipped (confidence ${signal.confidence}% < 45%)${RESET}`);
+        if (signal.confidence <= 20) {
+            console.log(`${YELLOW}skipped (confidence ${signal.confidence}% < 20%)${RESET}`);
             continue;
         }
 
@@ -94,11 +94,12 @@ async function executeTrade(signal: any, engine: DydxExecutionService) {
 
     // DYNAMIC LEVERAGE
     const BASE_COLLATERAL = 50;
-    let targetLeverage = 3;
+    let targetLeverage = 2; // Default: 2x (Low conviction — new tier)
     if (signal.confidence > 85) { targetLeverage = 10; console.log(`${GREEN}🚀🚀 MAX (${signal.confidence}%): 10x${RESET}`); }
     else if (signal.confidence > 77) { targetLeverage = 8; console.log(`${GREEN}🚀 HIGH (${signal.confidence}%): 8x${RESET}`); }
     else if (signal.confidence > 70) { targetLeverage = 5; console.log(`${GREEN}⚡ STRONG (${signal.confidence}%): 5x${RESET}`); }
-    else { console.log(`${YELLOW}⚡ STANDARD (${signal.confidence}%): 3x${RESET}`); }
+    else if (signal.confidence > 45) { targetLeverage = 3; console.log(`${YELLOW}⚡ STANDARD (${signal.confidence}%): 3x${RESET}`); }
+    else { console.log(`${YELLOW}⚡ LIGHT (${signal.confidence}%): 2x${RESET}`); }
 
     const size = BASE_COLLATERAL * targetLeverage;
     const tpPrice = isBuy ? price * 1.015 : price * 0.985;
