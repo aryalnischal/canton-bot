@@ -1,8 +1,8 @@
 
 import { ExchangeMetric } from "../lib/types";
 // Mock types are sufficient, importing just for interface
-import { CoinglassData } from "../services/coinglass-mock";
-import { OnChainMetrics } from "../services/on-chain-mock";
+import { CoinglassData } from "../services/coinglass";
+import { OnChainMetrics } from "../services/on-chain";
 
 // BACKTESTING ADAPTER
 // Approximates Intelligence Data from pure Price/Volume when real history is missing.
@@ -73,7 +73,13 @@ export function synthesizeHistoricalData(
             topTraderLsr: 1,
             longLiq: 0,
             shortLiq: 0,
-            oiChangePercent: 0
+            oiChangePercent: 0,
+            topTraderLSR: rsi > 50 ? 1.1 : 0.9,
+            takerBuySellRatio: priceChange > 0 ? 1.1 : 0.9,
+            fundingRate: 0,
+            oiTotal: 0,
+            smartMoneyBias: 0,
+            liquidationPressure: 0
         } as CoinglassData,
         maxPain: sma50,
         fundingRate

@@ -49,8 +49,6 @@ node
 node_modules/
 mongodb_data/
 
-.idea
-
-masternode
-creds
-
+# Secrets
+.env.local
+.env*.local

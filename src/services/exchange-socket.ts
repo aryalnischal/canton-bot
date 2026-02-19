@@ -38,8 +38,8 @@ class DydxSocketService {
                         const update: Partial<ExchangeMetric> = {
                             symbol: m.symbol,
                             price: m.price,
-                            funding: m.fundingRate,
-                            change24h: m.priceChange24h,
+                            fundingRate: m.fundingRate,
+                            priceChange24h: m.priceChange24h,
                             timestamp: Date.now()
                         };
                         this.notifySubscribers(update);

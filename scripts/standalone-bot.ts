@@ -1,9 +1,10 @@
 
 import * as dotenv from 'dotenv';
-dotenv.config({ path: '.env.local' });
+dotenv.config({ path: '.env.local', override: true });
 
 import { DydxExecutionService } from '../src/services/dydx-execution';
 import { ScannerService } from '../src/services/scanner';
+import { calculateATR } from '../src/lib/indicators';
 
 // ANSI Colors
 const CYAN = '\x1b[36m';
@@ -14,31 +15,469 @@ const RESET = '\x1b[0m';
 
 import dbConnect from '../src/lib/db';
 import Trade from '../src/models/Trade';
+import { TradeAnalyzer } from '../src/services/trade-analyzer';
 
+// ===== STATE =====
+const pendingSymbols = new Set<string>();
+const COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes
+const cooldownMap = new Map<string, number>(); // symbol → cooldown expiry timestamp
+const peakPnlMap = new Map<string, number>(); // symbol → highest PnL% seen (for trailing stop)
+const TRAIL_ACTIVATION = 0.75;  // Trailing stop activates after +0.75% PnL
+const TRAIL_PERCENT = 0.40;     // Trail 40% below peak (peak 2% → floor 1.2%)
+const MAX_POSITIONS = 3; // Max concurrent positions — high conviction
+
+// ===================================================================
+//  SIGNAL HANDLER — Process new signals and execute trades
+// ===================================================================
+async function handleSignals(
+    signals: any[],
+    account: any,
+    engine: DydxExecutionService
+) {
+    if (signals.length === 0) {
+        console.log(`${YELLOW}No signals found.${RESET}`);
+        return;
+    }
+
+    for (const signal of signals) {
+        const symbol = signal.symbol;
+
+        // DUPLICATE GUARD
+        const isAlreadyOpen = account?.openPositions && account.openPositions[symbol];
+        if (isAlreadyOpen || pendingSymbols.has(symbol)) continue;
+
+        // MAX POSITIONS GUARD
+        const openCount = account?.openPositions
+            ? Object.values(account.openPositions).filter((p: any) => parseFloat(p.size) !== 0).length
+            : 0;
+        if (openCount + pendingSymbols.size >= MAX_POSITIONS) {
+            console.log(`${YELLOW}⚠️ MAX POSITIONS (${MAX_POSITIONS}) reached — skipping new entries${RESET}`);
+            break; // No point checking more signals
+        }
+
+        // COOLDOWN GUARD
+        const cooldownUntil = cooldownMap.get(symbol);
+        if (cooldownUntil && Date.now() < cooldownUntil) {
+            const minsLeft = ((cooldownUntil - Date.now()) / 60000).toFixed(0);
+            console.log(`${YELLOW}⏳ COOLDOWN: ${symbol} — ${minsLeft}min remaining${RESET}`);
+            continue;
+        }
+
+        console.log(`Signal: ${signal.action === 'BUY' ? GREEN : RED}${signal.action} ${symbol}${RESET} (Score: ${signal.score.toFixed(2)} | Conf: ${signal.confidence}%)`);
+
+        // BLACKLIST CHECK
+        try {
+            if (await TradeAnalyzer.checkBlacklist(symbol)) {
+                console.log(`${RED}⛔ ${symbol} BLACKLISTED (3+ losses in 24h)${RESET}`);
+                continue;
+            }
+        } catch { /* DB not available */ }
+
+        // CONFIDENCE GATE
+        if (signal.confidence <= 60) {
+            console.log(`${YELLOW}skipped (confidence ${signal.confidence}% < 60%)${RESET}`);
+            continue;
+        }
+
+        if (signal.action === 'NEUTRAL') {
+            console.log(`${YELLOW}Skipping ${symbol} (NEUTRAL / Volatility Guard)${RESET}`);
+            continue;
+        }
+
+        // EXECUTE
+        await executeTrade(signal, engine);
+    }
+}
+
+// ===================================================================
+//  TRADE EXECUTION — Place order with dynamic leverage & ATR stop loss
+// ===================================================================
+async function executeTrade(signal: any, engine: DydxExecutionService) {
+    const { symbol, action, price } = signal;
+    const isBuy = action === 'BUY';
+
+    console.log(`${CYAN}>>> EXECUTING ${symbol}...${RESET}`);
+    pendingSymbols.add(symbol);
+    peakPnlMap.delete(symbol); // Clear any stale trailing stop data from previous position
+
+    if (!price) {
+        console.log(`${RED}✘ No Price for ${symbol}${RESET}`);
+        pendingSymbols.delete(symbol);
+        return;
+    }
+
+    // DYNAMIC LEVERAGE
+    let targetLeverage = 3; // Default: 3x
+    if (signal.confidence > 85) { targetLeverage = 10; console.log(`${GREEN}🚀🚀 MAX (${signal.confidence}%): 10x${RESET}`); }
+    else if (signal.confidence > 77) { targetLeverage = 8; console.log(`${GREEN}🚀 HIGH (${signal.confidence}%): 8x${RESET}`); }
+    else if (signal.confidence > 70) { targetLeverage = 5; console.log(`${GREEN}⚡ STRONG (${signal.confidence}%): 5x${RESET}`); }
+    else { console.log(`${YELLOW}⚡ STANDARD (${signal.confidence}%): 3x${RESET}`); }
+
+    // DYNAMIC POSITION SIZING — high conviction = bigger size
+    const acctState = await engine.getAccountState();
+    const freeCol = parseFloat(acctState?.freeCollateral || '0');
+    const baseCollateral = Math.floor(freeCol * 0.30); // 30% of free collateral per trade
+    if (baseCollateral < 15) {
+        console.log(`${RED}✘ Insufficient free collateral ($${freeCol.toFixed(2)}). Need at least $37.50.${RESET}`);
+        pendingSymbols.delete(symbol);
+        return;
+    }
+    const size = baseCollateral * targetLeverage;
+    console.log(`${YELLOW}💰 Collateral: $${baseCollateral} × ${targetLeverage}x = $${size} notional${RESET}`);
+    const tpPrice = isBuy ? price * 1.015 : price * 0.985;
+
+    // ATR-BASED STOP LOSS — wide stops for high-conviction trades
+    let slDistance = 0.08; // Default 8%
+    if (signal.candles?.length >= 14) {
+        const atr = calculateATR(signal.candles, 14);
+        const atrPct = atr / price;
+        slDistance = Math.min(Math.max(atrPct * 3, 0.05), 0.15); // 3× ATR, clamped 5%-15%
+        console.log(`${YELLOW}🛡️ Dynamic SL: ATR=${(atrPct * 100).toFixed(2)}% → Distance: ${(slDistance * 100).toFixed(2)}%${RESET}`);
+    }
+
+    // Snapshot position BEFORE order
+    const preAccount = await engine.getAccountState();
+    const prePosSize = Math.abs(parseFloat(preAccount?.openPositions?.[symbol]?.size || '0'));
+
+    try {
+        const res = await engine.executeOrder(
+            symbol, action, size, price, targetLeverage, false,
+            {
+                sl: isBuy
+                    ? parseFloat((price * (1 - slDistance)).toFixed(4))
+                    : parseFloat((price * (1 + slDistance)).toFixed(4)),
+                tp: price,
+            }
+        );
+
+        if (res.success) {
+            console.log(`${GREEN}✔ ORDER SUBMITTED: ${res.txHash} ($${size}, ${targetLeverage}x)${RESET}`);
+
+            // FILL VERIFICATION: Wait 3s then compare position size before vs after
+            await new Promise(r => setTimeout(r, 3000));
+            const postAccount = await engine.getAccountState();
+            const pos = postAccount?.openPositions?.[symbol];
+            const postPosSize = Math.abs(parseFloat(pos?.size || '0'));
+
+            // Check if position actually CHANGED (not just pre-existing dust)
+            if (postPosSize <= prePosSize) {
+                console.log(`${RED}✘ FILL REJECTED: ${symbol} — position unchanged (pre: ${prePosSize}, post: ${postPosSize}). Skipping DB save.${RESET}`);
+                pendingSymbols.delete(symbol);
+                return;
+            }
+
+            console.log(`${GREEN}✔ FILL CONFIRMED: ${symbol} size=${pos!.size} (was ${prePosSize})${RESET}`);
+            setTimeout(() => pendingSymbols.delete(symbol), 30000);
+
+            try {
+                await Trade.create({
+                    id: res.txHash || `TX-${Date.now()}`,
+                    symbol, action,
+                    price: parseFloat(pos.entryPrice) || res.filledPrice || price,
+                    size: Math.abs(postPosSize),
+                    leverage: targetLeverage,
+                    status: 'OPEN',
+                    txHash: res.txHash,
+                    strategy: 'AUTO_HEADLESS',
+                    tp: parseFloat(tpPrice.toFixed(4)),
+                    entryTime: Date.now(),
+                    signalSnapshot: {
+                        score: signal.score,
+                        confidence: signal.confidence,
+                        reasons: signal.reasons || [],
+                        marketState: {}
+                    }
+                });
+                console.log(`${GREEN}✔ DB SAVED${RESET}`);
+            } catch (dbErr) {
+                console.error(`${RED}✘ DB SAVE FAILED:${RESET}`, dbErr);
+            }
+        } else {
+            console.log(`${RED}✘ FAILED: ${res.error}${RESET}`);
+            pendingSymbols.delete(symbol);
+        }
+    } catch (err) {
+        console.error("Execution Error:", err);
+        pendingSymbols.delete(symbol);
+    }
+}
+
+// ===================================================================
+//  RECONCILIATION — Close "ghost" trades (DB=OPEN, dYdX=closed)
+// ===================================================================
+async function reconcileGhosts(engine: DydxExecutionService) {
+    const account = await engine.getAccountState();
+    if (!account) return;
+
+    const openPositions = account.openPositions || {};
+    const dbOpenTrades = await Trade.find({ status: 'OPEN' });
+
+    for (const t of dbOpenTrades) {
+        const pos = openPositions[t.symbol];
+        const size = pos ? parseFloat(pos.size) : 0;
+        const entryTime = t.entryTime || t.createdAt;
+        const age = Date.now() - new Date(entryTime).getTime();
+
+        if (age < 30000) continue; // Grace period
+
+        if (!pos || size === 0) {
+            console.log(`${CYAN}👻 RECONCILE: ${t.symbol} closed on-chain → marking CLOSED${RESET}`);
+            t.status = 'CLOSED';
+            t.exitReason = 'Limit/External Close (Reconciled)';
+            t.exitTime = Date.now();
+            await t.save();
+            startCooldown(t.symbol);
+        }
+    }
+}
+
+// ===================================================================
+//  POSITION MANAGEMENT — Soft stops, take profits, stale exits
+// ===================================================================
+async function managePositions(
+    engine: DydxExecutionService,
+    scanner: ScannerService
+) {
+    const account = await engine.getAccountState();
+    if (!account?.openPositions) return;
+
+    const positions = account.openPositions;
+
+    // Quick scan: do any positions need active management?
+    let needFreshSignals = false;
+    for (const key in positions) {
+        const p = positions[key];
+        if (parseFloat(p.size) === 0) continue;
+        const pnlPct = calcPnlPct(p);
+        if (pnlPct < -5.0 || pnlPct > 0.5) { needFreshSignals = true; break; }
+    }
+
+    let freshSignals: any[] = [];
+    if (needFreshSignals) {
+        freshSignals = (await scanner.scanMarkets()).signals || [];
+    }
+
+    for (const key in positions) {
+        const p = positions[key];
+        const symbol = p.market;
+        const size = parseFloat(p.size);
+        if (size === 0) continue;
+
+        const isLong = size > 0;
+        const closeSide = isLong ? 'SELL' : 'BUY';
+        const entryPrice = parseFloat(p.entryPrice);
+        const currentPrice = parseFloat(p.oraclePrice || p.entryPrice);
+        const uPnl = parseFloat(p.unrealizedPnl);
+        const cost = Math.abs(size * entryPrice);
+        const pnlPct = (uPnl / cost) * 100;
+
+        console.log(`[MANAGE] ${symbol} (${isLong ? 'BUY' : 'SELL'}) PnL: ${pnlPct.toFixed(2)}% ($${uPnl.toFixed(2)})`);
+
+        // ═══════════════════════════════════════════════════════════════
+        //  TRAILING STOP — lets winners run, protects profit dynamically
+        //  Activates at +0.75% PnL, then trails 40% below peak
+        //  Example: peak 2.0% → floor 1.2% | peak 5.0% → floor 3.0%
+        // ═══════════════════════════════════════════════════════════════
+        const prevPeak = peakPnlMap.get(symbol) || 0;
+
+        // Update peak (only goes up)
+        if (pnlPct > prevPeak) {
+            peakPnlMap.set(symbol, pnlPct);
+            if (pnlPct >= TRAIL_ACTIVATION && prevPeak < TRAIL_ACTIVATION) {
+                console.log(`${GREEN}📈 TRAIL ACTIVATED: ${symbol} — PnL ${pnlPct.toFixed(2)}% (trail floor: ${(pnlPct * (1 - TRAIL_PERCENT)).toFixed(2)}%)${RESET}`);
+            }
+        }
+
+        const peak = peakPnlMap.get(symbol) || 0;
+        if (peak >= TRAIL_ACTIVATION) {
+            const trailFloor = peak * (1 - TRAIL_PERCENT);
+            if (pnlPct < trailFloor) {
+                console.log(`${YELLOW}📉 TRAIL STOP: ${symbol} — Peak ${peak.toFixed(2)}% → Floor ${trailFloor.toFixed(2)}% → Actual ${pnlPct.toFixed(2)}%${RESET}`);
+                await closeAndRecord(symbol, closeSide, Math.abs(size * currentPrice), currentPrice, pnlPct, uPnl,
+                    `Trailing Stop (peak ${peak.toFixed(2)}%, floor ${trailFloor.toFixed(2)}%, actual ${pnlPct.toFixed(2)}%)`, engine);
+                peakPnlMap.delete(symbol);
+                continue;
+            }
+        }
+
+        // 1. SOFT STOP (-8% threshold — wide to let trades breathe)
+        if (pnlPct < -8.0) {
+            await handleSoftStop(symbol, closeSide, size, currentPrice, pnlPct, uPnl, freshSignals, engine, isLong);
+            peakPnlMap.delete(symbol);
+            continue;
+        }
+
+        // 2. PROFIT TAKING (ROE-based)
+        await handleTakeProfit(symbol, closeSide, size, currentPrice, pnlPct, uPnl, engine, isLong);
+
+        // 3. STALE GUARD (>4h with <1% gain)
+        await handleStaleExit(p, symbol, closeSide, size, currentPrice, pnlPct, uPnl, engine, isLong);
+    }
+}
+
+// ===== HELPERS =====
+
+function calcPnlPct(p: any): number {
+    const size = parseFloat(p.size);
+    const uPnl = parseFloat(p.unrealizedPnl);
+    const entry = parseFloat(p.entryPrice);
+    const cost = Math.abs(size * entry);
+    return (uPnl / cost) * 100;
+}
+
+function startCooldown(symbol: string) {
+    cooldownMap.set(symbol, Date.now() + COOLDOWN_MS);
+    console.log(`${YELLOW}⏳ ${symbol} cooldown started (30min)${RESET}`);
+}
+
+async function closeAndRecord(
+    symbol: string, closeSide: 'BUY' | 'SELL', sizeUsd: number,
+    currentPrice: number, pnlPct: number, uPnl: number,
+    exitReason: string, engine: DydxExecutionService
+) {
+    await engine.executeOrder(symbol, closeSide, sizeUsd, currentPrice, 1, true);
+    await Trade.updateMany(
+        { symbol, status: 'OPEN' },
+        { status: 'CLOSED', exitPrice: currentPrice, exitTime: Date.now(), exitReason, pnlValue: uPnl, pnlPercent: pnlPct }
+    );
+    startCooldown(symbol);
+}
+
+async function handleSoftStop(
+    symbol: string, closeSide: 'BUY' | 'SELL', size: number,
+    currentPrice: number, pnlPct: number, uPnl: number,
+    signals: any[], engine: DydxExecutionService, isLong: boolean
+) {
+    const match = signals.find((s: any) => s.symbol === symbol);
+    let shouldClose = false;
+    let reason = "";
+
+    if (!match) {
+        shouldClose = true;
+        reason = "Soft Stop: Signal Lost & Losing (>5%)";
+    } else if (match.action !== (isLong ? 'BUY' : 'SELL') && match.confidence > 20) {
+        shouldClose = true;
+        reason = `Soft Stop: Signal Reversal (${match.action})`;
+    } else if (match.action === (isLong ? 'BUY' : 'SELL') && match.confidence < 30) {
+        shouldClose = true;
+        reason = `Soft Stop: Thesis Weakened (${match.confidence}%)`;
+    } else {
+        console.log(`${YELLOW}🛡️ HOLDING ${symbol} despite -5% (Thesis Strong: ${match.confidence}%)${RESET}`);
+    }
+
+    if (shouldClose) {
+        console.log(`${RED}🚨 MANAGED EXIT: ${symbol} (${reason})${RESET}`);
+        await closeAndRecord(symbol, closeSide, Math.abs(size * currentPrice), currentPrice, pnlPct, uPnl, reason, engine);
+    }
+}
+
+async function handleTakeProfit(
+    symbol: string, closeSide: 'BUY' | 'SELL', size: number,
+    currentPrice: number, pnlPct: number, uPnl: number,
+    engine: DydxExecutionService, isLong: boolean
+) {
+    const matchedTrade = await Trade.findOne({ symbol, status: 'OPEN' });
+    const leverage = matchedTrade?.leverage || 3;
+    const roePct = pnlPct * leverage;
+
+    // TP1: >14% ROE → Close 50%
+    if (roePct > 14.0 && matchedTrade && !matchedTrade.isPartiallyClosed) {
+        console.log(`${GREEN}💰 TP1: ${symbol} (+${roePct.toFixed(2)}% ROE) — Securing 50%${RESET}`);
+        await engine.executeOrder(symbol, closeSide, Math.abs(size * currentPrice) * 0.5, currentPrice, 1, true);
+        matchedTrade.isPartiallyClosed = true;
+        await matchedTrade.save();
+        console.log(`${GREEN}✔ TP1 Saved${RESET}`);
+    }
+    // TP2: >40% ROE → Close remainder
+    else if (roePct > 40.0) {
+        console.log(`${GREEN}🚀 TP2 MOONBAG: ${symbol} (+${roePct.toFixed(2)}% ROE) — Closing All${RESET}`);
+        await closeAndRecord(symbol, closeSide, Math.abs(size * currentPrice), currentPrice, pnlPct, uPnl, "TP2 (Moonbag ROE 40%)", engine);
+    }
+}
+
+async function handleStaleExit(
+    p: any, symbol: string, closeSide: 'BUY' | 'SELL', size: number,
+    currentPrice: number, pnlPct: number, uPnl: number,
+    engine: DydxExecutionService, isLong: boolean
+) {
+    if (!p.createdAt) return;
+    const durationHours = (Date.now() - new Date(p.createdAt).getTime()) / 3_600_000;
+
+    if (durationHours > 4.0 && pnlPct < 1.0) {
+        console.log(`${YELLOW}⌛ STALE: ${symbol} (${durationHours.toFixed(1)}h, ${pnlPct.toFixed(2)}%)${RESET}`);
+        await closeAndRecord(symbol, closeSide, Math.abs(size * currentPrice), currentPrice, pnlPct, uPnl, `Stale (>${durationHours.toFixed(0)}h)`, engine);
+    }
+}
+
+// ===================================================================
+//  MAIN LOOP
+// ===================================================================
 async function main() {
     console.log(`${CYAN}=========================================${RESET}`);
     console.log(`${CYAN}   CANTON TRADING BOT - HEADLESS MODE    ${RESET}`);
     console.log(`${CYAN}=========================================${RESET}`);
 
-    // 1. Initialize Services
     const engine = new DydxExecutionService();
     const scanner = new ScannerService();
 
-    // Connect to DB
     console.log("Connecting to MongoDB...");
     await dbConnect();
     console.log(`${GREEN}DB Connected.${RESET}`);
 
-    // Wait for Engine Init
     console.log("Initializing Execution Engine...");
-    await engine.getAccountState(); // Triggers await
+    await engine.getAccountState();
     console.log(`${GREEN}Engine Ready.${RESET}`);
 
-    // 2. Loop
-    // TRACKING: Keep track of pending orders to prevent "Machine Gun" duplicates
-    // The Account State is polled, so it might be 1-2s stale.
-    // We use a local Set to block immediate re-entry.
-    const pendingSymbols = new Set<string>();
+    // ===== PREFLIGHT HEALTH CHECK =====
+    console.log(`\n${CYAN}--- Preflight API Validation ---${RESET}`);
+    let preflightPassed = true;
+
+    // 1. dYdX API
+    try {
+        const acct = await engine.getAccountState();
+        if (acct?.equity) {
+            console.log(`${GREEN}✔ dYdX API     : OK (Balance: $${parseFloat(acct.equity).toFixed(2)})${RESET}`);
+        } else {
+            console.log(`${RED}✘ dYdX API     : No account data${RESET}`);
+            preflightPassed = false;
+        }
+    } catch (e) {
+        console.log(`${RED}✘ dYdX API     : FAILED${RESET}`, e);
+        preflightPassed = false;
+    }
+
+    // 2. CoinGlass API
+    try {
+        const { fetchCoinglassData } = await import('../src/services/coinglass');
+        const cg = await fetchCoinglassData('BTC-USD');
+        console.log(`${GREEN}✔ CoinGlass API: OK (BTC FR: ${(cg.fundingRate * 100).toFixed(4)}%)${RESET}`);
+    } catch (e) {
+        console.log(`${YELLOW}⚠ CoinGlass API: Degraded (will use defaults)${RESET}`);
+    }
+
+    // 3. DeFiLlama (On-Chain)
+    try {
+        const { fetchOnChainMetrics } = await import('../src/services/on-chain');
+        const oc = await fetchOnChainMetrics('global');
+        console.log(`${GREEN}✔ DeFiLlama    : OK (TVL Change: ${oc.tvlChange >= 0 ? '+' : ''}${oc.tvlChange.toFixed(2)}%)${RESET}`);
+    } catch (e) {
+        console.log(`${YELLOW}⚠ DeFiLlama    : Degraded (will use defaults)${RESET}`);
+    }
+
+    // 4. MongoDB
+    try {
+        const count = await Trade.countDocuments();
+        console.log(`${GREEN}✔ MongoDB      : OK (${count} trades in DB)${RESET}`);
+    } catch (e) {
+        console.log(`${YELLOW}⚠ MongoDB      : Degraded (trades won't persist)${RESET}`);
+    }
+
+    if (!preflightPassed) {
+        console.log(`${RED}\n⛔ CRITICAL: dYdX API failed preflight. Cannot trade safely. Exiting.${RESET}`);
+        process.exit(1);
+    }
+
+    console.log(`${GREEN}\n✅ All systems operational. Starting scan loop...${RESET}\n`);
 
     while (true) {
         try {
@@ -53,382 +492,20 @@ async function main() {
                 console.log(`Balance: ${GREEN}$${equity.toFixed(2)}${RESET} | Free: $${freeCol.toFixed(2)}`);
             }
 
-            // B. Scan
+            // B. Reconcile ghost trades FIRST (sets cooldowns before new signals)
+            await reconcileGhosts(engine);
+
+            // C. Scan & Execute Signals (cooldowns are now active)
             const { signals } = await scanner.scanMarkets();
+            await handleSignals(signals, account, engine);
 
-            if (signals.length === 0) {
-                console.log(`${YELLOW}No signals found.${RESET}`);
-            } else {
-                for (const signal of signals) {
-                    // 1. Check if we already have a position
-                    const symbol = signal.symbol;
-
-                    // STRICT DUPLICATE GUARD
-                    const isAlreadyOpen = account?.openPositions && account.openPositions[symbol];
-                    const isPending = pendingSymbols.has(symbol);
-
-                    if (isAlreadyOpen || isPending) {
-                        // console.log(`[SKIP] ${symbol} - Already Active/Pending`);
-                        continue;
-                    }
-
-                    // 2. Validate Signal Strength
-                    console.log(`Signal: ${signal.action === 'BUY' ? GREEN : RED}${signal.action} ${symbol}${RESET} (Score: ${signal.score.toFixed(2)} | Conf: ${signal.confidence}%)`);
-
-
-                    // C. Auto-Execute (If High Confidence)
-                    // Threshold: 45% (Matches 'Active Scalp' logic in analysis-v5)
-                    if (signal.confidence > 45) {
-                        // 3. CHECK ACTION (Fix: Don't execute NEUTRAL signals from Volatility Guard)
-                        if (signal.action === 'NEUTRAL') {
-                            console.log(`${YELLOW}Skipping ${signal.symbol} (NEUTRAL Action / Volatility Guard)${RESET}`);
-                            continue;
-                        }
-
-                        console.log(`${CYAN}>>> EXECUTING ${signal.symbol}...${RESET}`);
-                        // LOCK IMMEDIATELY
-                        pendingSymbols.add(symbol);
-
-                        // Execute with Risk Management
-                        // TP: 4% | SL: 2%
-                        const price = signal.price;
-                        if (!price) {
-                            console.log(`${RED}✘ No Price for ${signal.symbol}${RESET}`);
-                            pendingSymbols.delete(symbol);
-                            continue;
-                        }
-
-                        const isBuy = signal.action === 'BUY';
-
-                        // DYNAMIC TP/SL LOGIC (ENTRY)
-                        // User Request: "TP1 at 0.8% (was 0.5%), TP2 at 1.5% (was 1.0%)"
-                        let tpPct = 0.015; // Hard Target 1.5% (TP2)
-
-                        console.log(`${YELLOW}🛡️ SL Strategy: Hard TP (+1.5%) & Soft Management Only (No Hard SL)${RESET}`);
-
-                        // Buy: TP > Price, SL < Price
-                        const tpPrice = isBuy ? price * (1 + tpPct) : price * (1 - tpPct);
-
-                        // We do NOT place a Hard SL (User request). 
-                        // We rely on the Loop's Soft SL (-5%) to close if needed.
-
-
-                        // DYNAMIC LEVERAGE & SIZING (User Request)
-                        // "Most coins max 10x" -> Adjusted Tiers:
-                        // > 85% -> 10x
-                        // > 77% -> 8x
-                        // > 70% -> 5x
-                        // > 45% -> 3x (Standard)
-
-                        const BASE_COLLATERAL = 50; // $50 Risk per trade
-                        let targetLeverage = 3;     // Default: 3x (Low/Medium Conviction)
-
-                        if (signal.confidence > 85) {
-                            targetLeverage = 10;
-                            console.log(`${GREEN}🚀🚀 MAX CONVICTION (${signal.confidence}%): Boosting Leverage to 10x${RESET}`);
-                        } else if (signal.confidence > 77) {
-                            targetLeverage = 8;
-                            console.log(`${GREEN}🚀 HIGH CONVICTION (${signal.confidence}%): Boosting Leverage to 8x${RESET}`);
-                        } else if (signal.confidence > 70) {
-                            targetLeverage = 5;
-                            console.log(`${GREEN}⚡ STRONG CONVICTION (${signal.confidence}%): Boosting Leverage to 5x${RESET}`);
-                        } else {
-                            console.log(`${YELLOW}⚡ STANDARD ENTRY (${signal.confidence}%): Using 3x Leverage${RESET}`);
-                        }
-
-                        const size = BASE_COLLATERAL * targetLeverage; // $150 to $500
-
-                        try {
-                            const res = await engine.executeOrder(
-                                signal.symbol,
-                                signal.action as 'BUY' | 'SELL',
-                                size,
-                                price,
-                                targetLeverage, // Leverage (Informational for generic engines, effectively Size/Collateral)
-                                false, // ReduceOnly
-                                {
-                                    // HARD STOP LOSS (Safety Net)
-                                    // -10% Max Risk (Catastrophic Guard)
-                                    sl: isBuy
-                                        ? parseFloat((price * 0.90).toFixed(4))
-                                        : parseFloat((price * 1.10).toFixed(4)),
-
-                                    // tp: undefined (We use Market Close logic)
-                                }
-                            );
-
-                            if (res.success) {
-                                console.log(`${GREEN}✔ EXECUTION SUCCESS: ${res.txHash} (Size: $${size}, Lev: ${targetLeverage}x)${RESET}`);
-
-                                // Keep Lock for 30s to allow account poll to catch up
-                                setTimeout(() => pendingSymbols.delete(symbol), 30000);
-
-                                // D. SAVE TO DB (WITH REASONING)
-                                try {
-                                    await Trade.create({
-                                        id: res.txHash || `TX-${Date.now()}`,
-                                        symbol: signal.symbol,
-                                        action: signal.action,
-                                        price: res.filledPrice || price,
-                                        size: res.filledSize || size,
-                                        leverage: targetLeverage, // SAVE ACTUAL LEVERAGE
-                                        status: 'OPEN',
-                                        txHash: res.txHash,
-                                        strategy: 'AUTO_HEADLESS',
-                                        tp: parseFloat(tpPrice.toFixed(4)),
-                                        entryTime: Date.now(),
-                                        // SNAPSHOT
-                                        signalSnapshot: {
-                                            score: signal.score,
-                                            confidence: signal.confidence,
-                                            reasons: signal.reasons || [],
-                                            marketState: {}
-                                        }
-                                    });
-                                    console.log(`${GREEN}✔ DB SAVED (Reasoning Logged)${RESET}`);
-                                } catch (dbErr) {
-                                    console.error(`${RED}✘ DB SAVE FAILED:${RESET}`, dbErr);
-                                }
-
-                            } else {
-                                console.log(`${RED}✘ EXECUTION FAILED: ${res.error}${RESET}`);
-                                pendingSymbols.delete(symbol); // Unlock
-                            }
-                        } catch (err) {
-                            console.error("Execution Error:", err);
-                            pendingSymbols.delete(symbol); // Unlock
-                        }
-                    } else {
-                        console.log(`${YELLOW}skipped (confidence ${signal.confidence}% < 45%)${RESET}`);
-                    }
-                }
-            }
-
-            // -----------------------------------------
-            // D. POSITION MANAGEMENT (Soft Stop Logic & Active TP)
-            // -----------------------------------------
-            // -----------------------------------------
-            // D. RECONCILIATION ("Ghost" Trades)
-            // If DB says OPEN but dYdX says NO POSITION -> It hit Limit TP/SL.
-            // -----------------------------------------
-            const activeAccount = await engine.getAccountState();
-
-            if (activeAccount) {
-                const openPositions = activeAccount.openPositions || {};
-
-                // Get ALL OPEN trades from DB
-                const dbOpenTrades = await Trade.find({ status: 'OPEN' });
-
-                for (const t of dbOpenTrades) {
-                    // Check if this symbol exists in dYdX positions
-                    const pos = openPositions[t.symbol];
-                    const size = pos ? parseFloat(pos.size) : 0;
-
-                    // GRACE PERIOD: Don't close trades created < 30s ago
-                    // (Prevents race condition where DB is faster than dYdX API)
-                    const entryTime = t.entryTime || t.createdAt;
-                    const age = Date.now() - new Date(entryTime).getTime();
-                    if (age < 30000) continue;
-
-                    if (!pos || size === 0) {
-                        console.log(`${CYAN}👻 RECONCILIATION: ${t.symbol} is closed on-chain but OPEN in DB. Marking CLOSED.${RESET}`);
-
-                        // We don't know exact exit price without fetching fills, 
-                        // so we assume it hit TP or SL.
-                        // For now, mark as CLOSED so it stops appearing as "Open $0 PnL".
-                        t.status = 'CLOSED';
-                        t.exitReason = 'Limit/External Close (Reconciled)';
-                        t.exitTime = Date.now();
-                        // t.exitPrice = ??? (Unknown without fill fetch)
-                        await t.save();
-                    }
-                }
-            }
-
-            if (activeAccount && activeAccount.openPositions) {
-                const positions = activeAccount.openPositions;
-
-                // OPTIMIZATION: Scan once if ANY position needs attention
-                // Check if any position > 0.5% (TP1) or < -5.0% (Soft SL)
-                let needScan = false;
-                for (const key in positions) {
-                    const p = positions[key];
-                    const size = parseFloat(p.size);
-                    if (size === 0) continue;
-                    const uPnl = parseFloat(p.unrealizedPnl);
-                    const entry = parseFloat(p.entryPrice);
-                    const cost = Math.abs(size * entry);
-                    const pnlPct = (uPnl / cost) * 100;
-
-                    if (pnlPct < -5.0 || pnlPct > 0.5) { // Active Management Zone
-                        needScan = true;
-                        break;
-                    }
-                }
-
-                let freshSignals: any[] = [];
-                if (needScan) {
-                    const scanRes = await scanner.scanMarkets();
-                    freshSignals = scanRes.signals || [];
-                }
-
-                for (const key in positions) {
-                    const p = positions[key];
-                    const symbol = p.market;
-                    const size = parseFloat(p.size);
-                    if (size === 0) continue;
-
-                    const isLong = size > 0;
-                    const side = isLong ? 'BUY' : 'SELL';
-                    const entryPrice = parseFloat(p.entryPrice);
-                    const currentPrice = parseFloat(p.oraclePrice || p.entryPrice);
-                    const uPnl = parseFloat(p.unrealizedPnl);
-                    const cost = Math.abs(size * entryPrice);
-                    const pnlPct = (uPnl / cost) * 100;
-
-                    console.log(`[MANAGE] ${symbol} (${side}) PnL: ${pnlPct.toFixed(2)}% ($${uPnl.toFixed(2)})`);
-
-                    // 1. SOFT STOP CHECK (-5% Threshold - WIDENED)
-                    if (pnlPct < -5.0) {
-                        const match = freshSignals.find((s: any) => s.symbol === symbol);
-                        let shouldClose = false;
-                        let closeReason = "";
-
-                        if (!match) {
-                            shouldClose = true;
-                            closeReason = "Soft Stop: Signal Lost & Losing (>5%)";
-                        } else {
-                            if (match.action !== side && match.confidence > 20) {
-                                shouldClose = true;
-                                closeReason = `Soft Stop: Signal Reversal (${match.action})`;
-                            } else if (match.action === side && match.confidence < 30) {
-                                shouldClose = true;
-                                closeReason = `Soft Stop: Thesis Weakened (${match.confidence}%)`;
-                            } else {
-                                console.log(`${YELLOW}🛡️ HOLDING ${symbol} despite -5% (Thesis Strong: ${match.confidence}%)${RESET}`);
-                            }
-                        }
-
-                        if (shouldClose) {
-                            console.log(`${RED}🚨 MANAGED EXIT: ${symbol} (${closeReason})${RESET}`);
-                            await engine.executeOrder(
-                                symbol,
-                                isLong ? 'SELL' : 'BUY',
-                                Math.abs(size * currentPrice),
-                                currentPrice,
-                                1,
-                                true
-                            );
-
-                            // UPDATE DB
-                            await Trade.updateMany(
-                                { symbol: symbol, status: 'OPEN' },
-                                {
-                                    status: 'CLOSED',
-                                    exitPrice: currentPrice,
-                                    exitTime: Date.now(),
-                                    exitReason: closeReason,
-                                    pnlValue: uPnl,
-                                    pnlPercent: pnlPct
-                                }
-                            );
-                        }
-                    }
-
-                    // 2. PROFIT TAKING (Active Market Close)
-                    // PnL % here is PRICE CHANGE % (approx), not ROE.
-                    // TP1: > 2.0% (was 1.5%) -> Close 50%
-                    if (pnlPct > 2.0) {
-                        const currentVal = Math.abs(size * currentPrice);
-
-                        // Check if we already took TP1? 
-                        // We don't have state for that yet, but if size is small, we assume we did.
-                        // Or if PnL > 3.0%, we go to TP2.
-
-                        // TP2: > 4.0% (was 3.0%) -> Close Remainder
-                        if (pnlPct > 4.0) {
-                            console.log(`${GREEN}💰 TP2 HIT: ${symbol} (+${pnlPct.toFixed(2)}%) - MARKET CLOSE (Remainder)${RESET}`);
-                            await engine.executeOrder(
-                                symbol,
-                                isLong ? 'SELL' : 'BUY',
-                                Math.abs(size * currentPrice), // Full Remaining Size
-                                currentPrice, // Used for size calc, but converted to Aggressive Limit IOC in engine
-                                1,
-                                true // ReduceOnly
-                            );
-
-                            // UPDATE DB
-                            await Trade.updateMany(
-                                { symbol: symbol, status: 'OPEN' },
-                                {
-                                    status: 'CLOSED',
-                                    exitPrice: currentPrice,
-                                    exitTime: Date.now(),
-                                    exitReason: "TP2 (Market Close)",
-                                    pnlValue: uPnl, // Final PnL
-                                    pnlPercent: pnlPct
-                                }
-                            );
-                        }
-                        // TP1: > 2.0%
-                        else if (currentVal > 40) {
-                            // Only take TP1 if size is significant (not dust)
-                            // and if we haven't taken it yet (proxy: size > 50% of original? Hard to know original)
-                            // For now, if > $40, we take half.
-                            console.log(`${GREEN}💰 TP1 HIT: ${symbol} (+${pnlPct.toFixed(2)}%) - MARKET CLOSE (50%)${RESET}`);
-                            await engine.executeOrder(
-                                symbol,
-                                isLong ? 'SELL' : 'BUY',
-                                Math.abs(size * currentPrice) * 0.5, // 50% Size
-                                currentPrice,
-                                1,
-                                true // ReduceOnly
-                            );
-
-                            // LOG PARTIAL
-                            console.log(`${GREEN}✔ TP1 (Market) Logged${RESET}`);
-                        }
-                    }
-
-                    // 3. STALE GUARD (Time-Based Exit - 4 Hours)
-                    if (p.createdAt) {
-                        const entryTime = new Date(p.createdAt).getTime();
-                        const durationMs = Date.now() - entryTime;
-                        const durationHours = durationMs / (1000 * 60 * 60);
-
-                        if (durationHours > 4.0 && pnlPct < 1.0) {
-                            console.log(`${YELLOW}⌛ STALE EXIT: ${symbol} (Open ${durationHours.toFixed(1)}h, PnL ${pnlPct.toFixed(2)}%) - Freeing Capital${RESET}`);
-                            await engine.executeOrder(
-                                symbol,
-                                isLong ? 'SELL' : 'BUY',
-                                Math.abs(size * currentPrice),
-                                currentPrice,
-                                1,
-                                true
-                            );
-
-                            // UPDATE DB
-                            await Trade.updateMany(
-                                { symbol: symbol, status: 'OPEN' },
-                                {
-                                    status: 'CLOSED',
-                                    exitPrice: currentPrice,
-                                    exitTime: Date.now(),
-                                    exitReason: `Stale (>4h)`,
-                                    pnlValue: uPnl,
-                                    pnlPercent: pnlPct
-                                }
-                            );
-                        }
-                    }
-                }
-            }
+            // D. Manage open positions
+            await managePositions(engine, scanner);
 
         } catch (e) {
             console.error(`${RED}Loop Error:${RESET}`, e);
         }
 
-        // Wait 30s
         await new Promise(r => setTimeout(r, 30000));
     }
 }

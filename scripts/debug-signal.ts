@@ -2,10 +2,8 @@
 import { Network, IndexerClient } from '@dydxprotocol/v4-client-js';
 import { generateV5Consensus } from '../src/lib/v5/analysis-v5';
 import { calculateMaxPain } from '../src/services/deribit-api';
-
-// Mocks for Context
-const MOCK_ON_CHAIN = { isBullish: false, isBearish: false, netFlow: 0, whaleScore: 0.5, tvlChange: 0, btcInflow: 0, usdcInflow: 0 };
-const MOCK_COINGLASS = { longShortRatio: 1.0, topTraderLsr: 1.0, longLiq: 0, shortLiq: 0, oiChangePercent: 0 };
+import { fetchCoinglassData } from '../src/services/coinglass';
+import { fetchOnChainMetrics } from '../src/services/on-chain';
 
 async function main() {
     const symbol = process.argv[2] || 'ETH-USD';
@@ -48,17 +46,21 @@ async function main() {
         open: 0
     }];
 
-    // 4. Max Pain
-    const maxPain = await calculateMaxPain(symbol).catch(() => 0);
+    // 4. Max Pain + REAL CoinGlass + REAL On-Chain (no more mocks!)
+    const [maxPain, coinglassData, onChainData] = await Promise.all([
+        calculateMaxPain(symbol).catch(() => 0),
+        fetchCoinglassData(symbol),
+        fetchOnChainMetrics(symbol)
+    ]);
     console.log(`Max Pain: ${maxPain}`);
 
     // 5. Generate Consensus
     const consensus = generateV5Consensus(
         metrics as any,
         candles,
-        null, // No Orderbook for simplicity, or we can fetch it
-        MOCK_COINGLASS,
-        MOCK_ON_CHAIN, // Mock OnChain for now implies Neutral
+        null,
+        coinglassData,
+        onChainData,
         maxPain,
         parseFloat(market.nextFundingRate)
     );

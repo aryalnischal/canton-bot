@@ -1,148 +1,54 @@
 
-import { DydxExecutionService } from '../src/services/dydx-execution';
-import {
-    Network,
-    IndexerClient,
-    OrderStatus,
-    OrderType,
-    OrderSide,
-    OrderTimeInForce,
-    OrderExecution
-} from '@dydxprotocol/v4-client-js';
-import dotenv from 'dotenv';
+import * as dotenv from 'dotenv';
+dotenv.config({ path: '.env.local', override: true });
 
-dotenv.config({ path: '.env.local' });
+import { DydxExecutionService } from '../src/services/dydx-execution';
 
 async function main() {
-    console.log("Initializing Execution Service...");
     const engine = new DydxExecutionService();
 
-    // Wait for init
+    // Wait for init to complete
     await new Promise(r => setTimeout(r, 3000));
 
-    // ---------------------------------------------------------
-    // 1. CANCEL ALL OPEN ORDERS
-    // ---------------------------------------------------------
-    const client = (engine as any).client;
-    const subaccount = (engine as any).subaccount;
+    const state = await engine.getAccountState();
+    if (!state) { console.log('No account state'); return; }
 
-    // Fetch Markets Globally
-    console.log("Fetching Market IDs...");
-    const marketsReq = await client.indexerClient.markets.getPerpetualMarkets();
-    const marketsRaw = marketsReq.markets;
+    const positions = state.openPositions || {};
+    const keys = Object.keys(positions).filter(k => parseFloat(positions[k].size) !== 0);
 
-    if (client && subaccount) {
+    if (keys.length === 0) { console.log('No open positions.'); return; }
+
+    console.log(`Found ${keys.length} open positions. Closing all...`);
+
+    for (const symbol of keys) {
+        const pos = positions[symbol];
+        const size = parseFloat(pos.size);
+        const price = parseFloat(pos.oraclePrice || pos.entryPrice);
+        const tokenSize = Math.abs(size);
+        const sizeUsd = tokenSize * price;
+        const closeSide = size > 0 ? 'SELL' : 'BUY';
+
+        console.log(`Closing ${symbol}: ${closeSide} ${tokenSize} tokens ($${sizeUsd.toFixed(2)})`);
+
         try {
-            console.log("\n[1/2] Checking for Open Orders (SCORCHED EARTH)...");
-
-            const orders = await client.indexerClient.account.getSubaccountOrders(
-                subaccount.address,
-                subaccount.subaccountNumber,
-                undefined, undefined, undefined,
-                undefined, // STATUS: ALL
-                undefined, // TYPE
-                100        // LIMIT
-            );
-
-            const activeOrders = orders.filter((o: any) =>
-                o.status !== 'FILLED' &&
-                o.status !== 'CANCELED' &&
-                o.status !== 'LIQUIDATED'
-            );
-
-            if (activeOrders.length > 0) {
-                console.log(`Found ${activeOrders.length} Stubborn Orders. Cancelling...`);
-                for (const order of activeOrders) {
-                    try {
-                        const market = marketsRaw[order.ticker];
-                        const realClobPairId = market ? market.clobPairId : order.ticker;
-                        const gtt = Math.floor(new Date(order.goodTilBlockTime || 0).getTime() / 1000);
-
-                        await client.cancelRawOrder(
-                            subaccount,
-                            order.clientId,
-                            order.orderFlags,
-                            realClobPairId,
-                            order.goodTilBlock || 0,
-                            gtt
-                        );
-                        console.log(`Cancelled Order ${order.clientId} (${order.ticker})`);
-                        await new Promise(r => setTimeout(r, 200));
-                    } catch (e: any) {
-                        console.log(`Failed to cancel ${order.clientId}:`, e.message);
-                    }
-                }
-            } else {
-                console.log("No Active Orders found.");
-            }
+            const result = await engine.executeOrder(symbol, closeSide, sizeUsd, price, 1, true);
+            console.log(`  → ${result.success ? '✅ Closed' : '❌ Failed: ' + result.error}`);
         } catch (e) {
-            console.warn("Failed to check orders:", e);
+            console.error(`  → ❌ Error:`, e);
         }
+
+        await new Promise(r => setTimeout(r, 1500));
     }
 
-    // ---------------------------------------------------------
-    // 2. CLOSE ALL POSITIONS (Direct SDK)
-    // ---------------------------------------------------------
-    console.log("\n[2/2] Checking for Open Positions...");
-    const subRaw = await client.indexerClient.account.getSubaccount(subaccount.address, subaccount.subaccountNumber);
-    const account = subRaw.subaccount;
-
-    const positions = account.openPerpetualPositions || account.openPositions || {};
-    const posKeys = Object.keys(positions);
-
-    console.log(`Found ${posKeys.length} Open Positions.`);
-
-    for (const key of posKeys) {
-        const p = positions[key];
-        const size = parseFloat(p.size);
-        if (size === 0) continue;
-
-        const symbol = key;
-        const marketInfo = marketsRaw[symbol];
-        const oraclePrice = parseFloat(marketInfo.oraclePrice);
-
-        // Aggressive Slippage (20%) to ensure fill
-        // For BUY (Close Short): Price * 1.2
-        // For SELL (Close Long): Price * 0.8
-        const executionPrice = size > 0
-            ? oraclePrice * 0.8  // Sell Low (Aggressive)
-            : oraclePrice * 1.2; // Buy High (Aggressive)
-
-        // Round executionPrice to valid tick size? 
-        // SDK handles validation or we can send raw float for IOC?
-        // Let's rely on standard float, or to be safe, exact digits.
-
-        console.log(`Closing ${symbol} (Size: ${size}) at Worst Price ${executionPrice} (Oracle: ${oraclePrice})...`);
-
-        try {
-            const side = size > 0 ? OrderSide.SELL : OrderSide.BUY;
-            const absSize = Math.abs(size);
-            const clientId = Math.floor(Math.random() * 100000000);
-
-            // DIRECT PLACE ORDER
-            const tx = await client.placeOrder(
-                subaccount,
-                symbol,
-                OrderType.MARKET,
-                side,
-                executionPrice, // Aggressive Limit
-                absSize, // EXACT SIZE
-                clientId,
-                OrderTimeInForce.IOC,
-                0, // GTT
-                OrderExecution.DEFAULT,
-                false, // postOnly
-                true // reduceOnly
-            );
-
-            console.log(`Closed ${symbol}: TX Hash ${tx.hash}`);
-            await new Promise(r => setTimeout(r, 1000));
-        } catch (e: any) {
-            console.error(`Failed to close ${symbol}:`, e.message || e);
-        }
-    }
-
-    console.log("\nDone. Account Reset.");
+    console.log('\nVerifying...');
+    await new Promise(r => setTimeout(r, 2000));
+    const finalState = await engine.getAccountState();
+    const remaining = Object.keys(finalState?.openPositions || {}).filter(
+        k => parseFloat(finalState!.openPositions[k].size) !== 0
+    );
+    console.log(`Remaining: ${remaining.length}`);
+    if (remaining.length === 0) console.log('✅ All clear — ready for fresh start!');
+    else console.log('⚠️ Still open:', remaining.join(', '));
 }
 
-main();
+main().catch(console.error);

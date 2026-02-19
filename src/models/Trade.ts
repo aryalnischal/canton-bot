@@ -20,6 +20,7 @@ const TradeSchema = new mongoose.Schema({
 
     // Execution Details
     status: { type: String, enum: ['OPEN', 'CLOSED'], default: 'OPEN' },
+    isPartiallyClosed: { type: Boolean, default: false }, // Track TP1
     txHash: { type: String }, // Hyperliquid OID
 
     // Safety

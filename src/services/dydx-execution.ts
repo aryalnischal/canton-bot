@@ -14,6 +14,15 @@ import * as dotenv from 'dotenv';
 
 dotenv.config({ path: '.env.local' });
 
+// Layered TP Configuration
+// Each layer closes a fraction of the position at escalating gain levels.
+// All TP orders are reduce_only so they can never open a new position.
+const TP_LAYERS = [
+    { pct: 0.25, gain: 0.0075 },  // TP1: 25% of position at +0.75%
+    { pct: 0.25, gain: 0.015 },   // TP2: 25% of position at +1.5%
+    { pct: 0.50, gain: 0.03 },    // TP3: 50% of position at +3%
+];
+
 // Types
 export interface ExecutionResult {
     success: boolean;
@@ -118,11 +127,12 @@ export class DydxExecutionService {
             // Size = (USD / Price) 
             let rawSize = sizeUsd / currentPrice;
 
-            // Round to 3 decimals effectively which is safe for most crypto.
-            const size = parseFloat(rawSize.toFixed(3));
+            // Round to market step size
+            const stepSize = parseFloat(market.stepSize || '0.001');
+            const size = parseFloat((Math.floor(rawSize / stepSize) * stepSize).toFixed(10));
 
             if (size <= 0 || !isFinite(size)) {
-                return { success: false, error: `Invalid Size Calculation: ${size} (Price: ${currentPrice})` };
+                return { success: false, error: `Invalid Size Calculation: ${size} (Price: ${currentPrice}, stepSize: ${stepSize})` };
             }
 
             // 2. Place Order
@@ -131,22 +141,23 @@ export class DydxExecutionService {
 
             console.log(`[DYDX] Placing ${action} ${size} ${symbol} (Reduce: ${reduceOnly})...`);
 
-            // AGGRESSIVE CLOSE LOGIC
-            // If Reducing Position, use LIMIT IOC with 5% Slippage to guarantee fill (User Request)
-            let orderType = OrderType.MARKET;
-            let price = 0;
-            let tif = OrderTimeInForce.IOC;
+            // FIX: dYdX v4 MARKET orders with price=0 silently fail.
+            // Use LIMIT IOC with 5% slippage for ALL orders (standard dYdX v4 pattern).
+            const orderType = OrderType.LIMIT;
+            const tif = OrderTimeInForce.IOC;
 
-            if (reduceOnly) {
-                orderType = OrderType.LIMIT;
-                // Buy: Price * 1.05 (Willing to pay more to close Short)
-                // Sell: Price * 0.95 (Willing to sell less to close Long)
-                price = action === 'BUY'
-                    ? parseFloat((currentPrice * 1.05).toFixed(4))
-                    : parseFloat((currentPrice * 0.95).toFixed(4));
+            // Worst-case price with 5% slippage
+            // BUY: willing to pay 5% more | SELL: willing to accept 5% less
+            let price = action === 'BUY'
+                ? currentPrice * 1.05
+                : currentPrice * 0.95;
 
-                console.log(`[DYDX] Aggressive Close: LIMIT IOC at ${price} (5% Slippage)`);
-            }
+            // Round to market tick size
+            const tickSize = parseFloat(market.tickSize || '0.01');
+            price = Math.round(price / tickSize) * tickSize;
+            price = parseFloat(price.toFixed(6)); // clean floating point
+
+            console.log(`[DYDX] LIMIT IOC at $${price} (5% slippage from $${currentPrice})`);
 
             const tx = await this.client.placeOrder(
                 this.subaccount,
@@ -234,26 +245,63 @@ export class DydxExecutionService {
             }
 
             if (tpPrice) {
-                // Take Profit
+                // Layered Take Profits (3 reduce-only orders)
+                await this.placeLayeredTPs(
+                    subaccount,
+                    symbol,
+                    entryAction,
+                    size,
+                    tpPrice, // Used as reference entry price
+                    clientIdBase + 1
+                );
+            }
+        } catch (e) {
+            console.error("[DYDX] Failed to place triggers:", e);
+        }
+    }
+
+    /**
+     * Places layered TP orders that each close a fraction of the position.
+     * All orders are reduce_only — they can only shrink the position, never open a new one.
+     */
+    private async placeLayeredTPs(
+        subaccount: SubaccountClient,
+        symbol: string,
+        entryAction: 'BUY' | 'SELL',
+        totalSize: number,
+        entryPrice: number,
+        clientIdBase: number
+    ) {
+        const exitSide = entryAction === 'BUY' ? OrderSide.SELL : OrderSide.BUY;
+        const direction = entryAction === 'BUY' ? 1 : -1;
+
+        for (let i = 0; i < TP_LAYERS.length; i++) {
+            const layer = TP_LAYERS[i];
+            const triggerPrice = entryPrice * (1 + layer.gain * direction);
+            const layerSize = parseFloat((totalSize * layer.pct).toFixed(10));
+
+            if (layerSize <= 0) continue;
+
+            try {
                 await this.client?.placeOrder(
                     subaccount,
                     symbol,
                     OrderType.TAKE_PROFIT_MARKET,
                     exitSide,
-                    0, // Price
-                    size, // Size
-                    clientIdBase + 1, // Unique Client ID
+                    0, // Price (Market execution)
+                    layerSize,
+                    clientIdBase + i,
                     OrderTimeInForce.GTT,
-                    7776000, // GoodTilTimeSeconds (90 Days)
+                    7776000, // 90 Days
                     OrderExecution.IOC,
                     false,
-                    true, // reduceOnly
-                    tpPrice
+                    true, // reduceOnly — CRITICAL: only reduces, never opens
+                    parseFloat(triggerPrice.toFixed(6))
                 );
-                console.log(`[DYDX] TP Placed at ${tpPrice}`);
+                console.log(`[DYDX] TP${i + 1} Placed: ${Math.round(layer.pct * 100)}% @ $${triggerPrice.toFixed(4)} (+${Math.round(layer.gain * 100)}%)`);
+            } catch (e) {
+                console.error(`[DYDX] TP${i + 1} Failed:`, e);
             }
-        } catch (e) {
-            console.error("[DYDX] Failed to place triggers:", e);
         }
     }
 
