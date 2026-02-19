@@ -24,7 +24,7 @@ const cooldownMap = new Map<string, number>(); // symbol → cooldown expiry tim
 const peakPnlMap = new Map<string, number>(); // symbol → highest PnL% seen (for trailing stop)
 const TRAIL_ACTIVATION = 1.50;  // Trailing stop activates after +1.5% PnL
 const TRAIL_PERCENT = 0.40;     // Trail 40% below peak (peak 2% → floor 1.2%)
-const MAX_POSITIONS = 3; // Max concurrent positions — high conviction
+const MAX_POSITIONS = 4; // Max concurrent positions — balanced diversification
 
 // ===================================================================
 //  SIGNAL HANDLER — Process new signals and execute trades
@@ -73,9 +73,9 @@ async function handleSignals(
             }
         } catch { /* DB not available */ }
 
-        // CONFIDENCE GATE
-        if (signal.confidence <= 60) {
-            console.log(`${YELLOW}skipped (confidence ${signal.confidence}% < 60%)${RESET}`);
+        // CONFIDENCE GATE (45% = 3-of-5 pillar majority consensus)
+        if (signal.confidence <= 45) {
+            console.log(`${YELLOW}skipped (confidence ${signal.confidence}% < 45%)${RESET}`);
             continue;
         }
 
@@ -116,9 +116,9 @@ async function executeTrade(signal: any, engine: DydxExecutionService) {
     // DYNAMIC POSITION SIZING — high conviction = bigger size
     const acctState = await engine.getAccountState();
     const freeCol = parseFloat(acctState?.freeCollateral || '0');
-    const baseCollateral = Math.floor(freeCol * 0.30); // 30% of free collateral per trade
+    const baseCollateral = Math.floor(freeCol * 0.20); // 20% of free collateral per trade (4 slots × 20% = 80% max)
     if (baseCollateral < 15) {
-        console.log(`${RED}✘ Insufficient free collateral ($${freeCol.toFixed(2)}). Need at least $37.50.${RESET}`);
+        console.log(`${RED}✘ Insufficient free collateral ($${freeCol.toFixed(2)}). Need at least $75.${RESET}`);
         pendingSymbols.delete(symbol);
         return;
     }
