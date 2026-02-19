@@ -110,7 +110,7 @@ export async function POST(req: Request) {
             safeSize = parseFloat(maxSafeSize.toFixed(2));
         }
 
-        const slDist = Math.min(Math.max(volatility * 2, 0.03), 0.10);
+        const slDist = Math.min(Math.max(volatility * 3, 0.05), 0.15);
         const slPrice = action === 'BUY'
             ? parseFloat((currentPriceReference * (1 - slDist)).toFixed(4))
             : parseFloat((currentPriceReference * (1 + slDist)).toFixed(4));

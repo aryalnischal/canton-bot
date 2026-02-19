@@ -126,12 +126,12 @@ async function executeTrade(signal: any, engine: DydxExecutionService) {
     console.log(`${YELLOW}💰 Collateral: $${baseCollateral} × ${targetLeverage}x = $${size} notional${RESET}`);
     const tpPrice = isBuy ? price * 1.015 : price * 0.985;
 
-    // ATR-BASED STOP LOSS
-    let slDistance = 0.05;
+    // ATR-BASED STOP LOSS — wide stops for high-conviction trades
+    let slDistance = 0.08; // Default 8%
     if (signal.candles?.length >= 14) {
         const atr = calculateATR(signal.candles, 14);
         const atrPct = atr / price;
-        slDistance = Math.min(Math.max(atrPct * 2, 0.03), 0.10);
+        slDistance = Math.min(Math.max(atrPct * 3, 0.05), 0.15); // 3× ATR, clamped 5%-15%
         console.log(`${YELLOW}🛡️ Dynamic SL: ATR=${(atrPct * 100).toFixed(2)}% → Distance: ${(slDistance * 100).toFixed(2)}%${RESET}`);
     }
 
@@ -300,8 +300,8 @@ async function managePositions(
             }
         }
 
-        // 1. SOFT STOP (-5% threshold)
-        if (pnlPct < -5.0) {
+        // 1. SOFT STOP (-8% threshold — wide to let trades breathe)
+        if (pnlPct < -8.0) {
             await handleSoftStop(symbol, closeSide, size, currentPrice, pnlPct, uPnl, freshSignals, engine, isLong);
             peakPnlMap.delete(symbol);
             continue;
