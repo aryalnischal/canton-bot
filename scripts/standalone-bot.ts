@@ -22,7 +22,7 @@ const pendingSymbols = new Set<string>();
 const COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes
 const cooldownMap = new Map<string, number>(); // symbol → cooldown expiry timestamp
 const peakPnlMap = new Map<string, number>(); // symbol → highest PnL% seen (for trailing stop)
-const TRAIL_ACTIVATION = 0.75;  // Trailing stop activates after +0.75% PnL
+const TRAIL_ACTIVATION = 1.50;  // Trailing stop activates after +1.5% PnL
 const TRAIL_PERCENT = 0.40;     // Trail 40% below peak (peak 2% → floor 1.2%)
 const MAX_POSITIONS = 3; // Max concurrent positions — high conviction
 
@@ -310,8 +310,7 @@ async function managePositions(
         // 2. PROFIT TAKING (ROE-based)
         await handleTakeProfit(symbol, closeSide, size, currentPrice, pnlPct, uPnl, engine, isLong);
 
-        // 3. STALE GUARD (>4h with <1% gain)
-        await handleStaleExit(p, symbol, closeSide, size, currentPrice, pnlPct, uPnl, engine, isLong);
+        // (Stale guard removed — high-conviction trades can run for days)
     }
 }
 
