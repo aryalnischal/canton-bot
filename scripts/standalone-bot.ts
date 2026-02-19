@@ -24,7 +24,7 @@ const cooldownMap = new Map<string, number>(); // symbol → cooldown expiry tim
 const peakPnlMap = new Map<string, number>(); // symbol → highest PnL% seen (for trailing stop)
 const TRAIL_ACTIVATION = 0.75;  // Trailing stop activates after +0.75% PnL
 const TRAIL_PERCENT = 0.40;     // Trail 40% below peak (peak 2% → floor 1.2%)
-const MAX_POSITIONS = 2; // Max concurrent positions — fewer, higher conviction
+const MAX_POSITIONS = 3; // Max concurrent positions — high conviction
 
 // ===================================================================
 //  SIGNAL HANDLER — Process new signals and execute trades
@@ -116,7 +116,7 @@ async function executeTrade(signal: any, engine: DydxExecutionService) {
     // DYNAMIC POSITION SIZING — high conviction = bigger size
     const acctState = await engine.getAccountState();
     const freeCol = parseFloat(acctState?.freeCollateral || '0');
-    const baseCollateral = Math.floor(freeCol * 0.40); // 40% of free collateral per trade
+    const baseCollateral = Math.floor(freeCol * 0.30); // 30% of free collateral per trade
     if (baseCollateral < 15) {
         console.log(`${RED}✘ Insufficient free collateral ($${freeCol.toFixed(2)}). Need at least $37.50.${RESET}`);
         pendingSymbols.delete(symbol);
