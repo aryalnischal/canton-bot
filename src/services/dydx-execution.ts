@@ -11,17 +11,9 @@ import {
     SubaccountClient
 } from '@dydxprotocol/v4-client-js';
 import * as dotenv from 'dotenv';
+import { getTpLayers } from '../lib/adaptive-tp';
 
 dotenv.config({ path: '.env.local' });
-
-// Layered TP Configuration
-// Each layer closes a fraction of the position at escalating gain levels.
-// All TP orders are reduce_only so they can never open a new position.
-const TP_LAYERS = [
-    { pct: 0.25, gain: 0.0075 },  // TP1: 25% of position at +0.75%
-    { pct: 0.25, gain: 0.015 },   // TP2: 25% of position at +1.5%
-    { pct: 0.50, gain: 0.03 },    // TP3: 50% of position at +3%
-];
 
 // Types
 export interface ExecutionResult {
@@ -95,7 +87,7 @@ export class DydxExecutionService {
         currentPrice: number, // Reference for size calc
         leverage: number = 1,
         reduceOnly: boolean = false,
-        options: { sl?: number; tp?: number; trailingPercent?: number } = {} // Fix Type
+        options: { sl?: number; tp?: number; trailingPercent?: number; tpLayers?: { pct: number; gain: number }[] } = {}
     ): Promise<ExecutionResult> {
         if (!this.isReady) await this.initializationPromise;
         if (!this.client || !this.subaccount) return { success: false, error: "Client not ready" };
@@ -184,7 +176,8 @@ export class DydxExecutionService {
                     size,
                     options.sl,
                     options.tp,
-                    options.trailingPercent
+                    options.trailingPercent,
+                    options.tpLayers
                 );
             }
 
@@ -208,7 +201,8 @@ export class DydxExecutionService {
         size: number,
         slPrice?: number,
         tpPrice?: number,
-        trailingPercent?: number
+        trailingPercent?: number,
+        tpLayers?: { pct: number; gain: number }[]
     ) {
         // Exit Action is opposite of Entry
         const exitSide = entryAction === 'BUY' ? OrderSide.SELL : OrderSide.BUY;
@@ -245,14 +239,16 @@ export class DydxExecutionService {
             }
 
             if (tpPrice) {
-                // Layered Take Profits (3 reduce-only orders)
+                // ADAPTIVE Layered Take Profits — tier-aware
+                const layers = tpLayers || getTpLayers(symbol);
                 await this.placeLayeredTPs(
                     subaccount,
                     symbol,
                     entryAction,
                     size,
                     tpPrice, // Used as reference entry price
-                    clientIdBase + 1
+                    clientIdBase + 1,
+                    layers
                 );
             }
         } catch (e) {
@@ -263,6 +259,7 @@ export class DydxExecutionService {
     /**
      * Places layered TP orders that each close a fraction of the position.
      * All orders are reduce_only — they can only shrink the position, never open a new one.
+     * Now accepts tier-specific layers from the adaptive TP engine.
      */
     private async placeLayeredTPs(
         subaccount: SubaccountClient,
@@ -270,13 +267,16 @@ export class DydxExecutionService {
         entryAction: 'BUY' | 'SELL',
         totalSize: number,
         entryPrice: number,
-        clientIdBase: number
+        clientIdBase: number,
+        layers: { pct: number; gain: number }[]
     ) {
         const exitSide = entryAction === 'BUY' ? OrderSide.SELL : OrderSide.BUY;
         const direction = entryAction === 'BUY' ? 1 : -1;
 
-        for (let i = 0; i < TP_LAYERS.length; i++) {
-            const layer = TP_LAYERS[i];
+        console.log(`[DYDX] Placing ${layers.length} Adaptive TP layers for ${symbol}`);
+
+        for (let i = 0; i < layers.length; i++) {
+            const layer = layers[i];
             const triggerPrice = entryPrice * (1 + layer.gain * direction);
             const layerSize = parseFloat((totalSize * layer.pct).toFixed(10));
 
@@ -298,7 +298,7 @@ export class DydxExecutionService {
                     true, // reduceOnly — CRITICAL: only reduces, never opens
                     parseFloat(triggerPrice.toFixed(6))
                 );
-                console.log(`[DYDX] TP${i + 1} Placed: ${Math.round(layer.pct * 100)}% @ $${triggerPrice.toFixed(4)} (+${Math.round(layer.gain * 100)}%)`);
+                console.log(`[DYDX] TP${i + 1} Placed: ${Math.round(layer.pct * 100)}% @ $${triggerPrice.toFixed(4)} (+${(layer.gain * 100).toFixed(1)}%)`);
             } catch (e) {
                 console.error(`[DYDX] TP${i + 1} Failed:`, e);
             }
