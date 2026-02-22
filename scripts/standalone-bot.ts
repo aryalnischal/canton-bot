@@ -5,6 +5,7 @@ dotenv.config({ path: '.env.local', override: true });
 import { DydxExecutionService } from '../src/services/dydx-execution';
 import { ScannerService } from '../src/services/scanner';
 import { calculateATR } from '../src/lib/indicators';
+import { getAdaptiveTpConfig, getBaseTier } from '../src/lib/adaptive-tp';
 
 // ANSI Colors
 const CYAN = '\x1b[36m';
@@ -22,9 +23,8 @@ const pendingSymbols = new Set<string>();
 const COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes
 const cooldownMap = new Map<string, number>(); // symbol → cooldown expiry timestamp
 const peakPnlMap = new Map<string, number>(); // symbol → highest PnL% seen (for trailing stop)
-const TRAIL_ACTIVATION = 1.50;  // Trailing stop activates after +1.5% PnL
-const TRAIL_PERCENT = 0.40;     // Trail 40% below peak (peak 2% → floor 1.2%)
-const MAX_POSITIONS = 3; // Max concurrent positions — high conviction
+// TRAIL constants removed — now dynamic per asset via adaptive-tp.ts
+const MAX_POSITIONS = 4; // Max concurrent positions — balanced diversification
 
 // ===================================================================
 //  SIGNAL HANDLER — Process new signals and execute trades
@@ -73,9 +73,9 @@ async function handleSignals(
             }
         } catch { /* DB not available */ }
 
-        // CONFIDENCE GATE
-        if (signal.confidence <= 60) {
-            console.log(`${YELLOW}skipped (confidence ${signal.confidence}% < 60%)${RESET}`);
+        // CONFIDENCE GATE (45% = 3-of-5 pillar majority consensus)
+        if (signal.confidence <= 45) {
+            console.log(`${YELLOW}skipped (confidence ${signal.confidence}% < 45%)${RESET}`);
             continue;
         }
 
@@ -116,9 +116,9 @@ async function executeTrade(signal: any, engine: DydxExecutionService) {
     // DYNAMIC POSITION SIZING — high conviction = bigger size
     const acctState = await engine.getAccountState();
     const freeCol = parseFloat(acctState?.freeCollateral || '0');
-    const baseCollateral = Math.floor(freeCol * 0.30); // 30% of free collateral per trade
+    const baseCollateral = Math.floor(freeCol * 0.20); // 20% of free collateral per trade (4 slots × 20% = 80% max)
     if (baseCollateral < 15) {
-        console.log(`${RED}✘ Insufficient free collateral ($${freeCol.toFixed(2)}). Need at least $37.50.${RESET}`);
+        console.log(`${RED}✘ Insufficient free collateral ($${freeCol.toFixed(2)}). Need at least $75.${RESET}`);
         pendingSymbols.delete(symbol);
         return;
     }
@@ -139,6 +139,12 @@ async function executeTrade(signal: any, engine: DydxExecutionService) {
     const preAccount = await engine.getAccountState();
     const prePosSize = Math.abs(parseFloat(preAccount?.openPositions?.[symbol]?.size || '0'));
 
+    // ADAPTIVE TP — get tier-specific config using live 15-min candles
+    const tpConfig = getAdaptiveTpConfig(symbol, signal.candles);
+    console.log(`${CYAN}🎯 Adaptive TP: ${symbol} → ${tpConfig.tier}${tpConfig.tierBumped ? ' (BUMPED)' : ''} | volMul: ${tpConfig.volMultiplier}x${RESET}`);
+    console.log(`${CYAN}   Layers: ${tpConfig.layers.map((l, i) => `TP${i + 1}: ${Math.round(l.pct * 100)}% @ +${(l.gain * 100).toFixed(1)}%`).join(' | ')}${RESET}`);
+    console.log(`${CYAN}   ROE: TP1 >${tpConfig.roeTP1}% | TP2 >${tpConfig.roeTP2}% | Trail: act +${tpConfig.trailActivation}% / ${Math.round(tpConfig.trailPercent * 100)}%${RESET}`);
+
     try {
         const res = await engine.executeOrder(
             symbol, action, size, price, targetLeverage, false,
@@ -147,6 +153,7 @@ async function executeTrade(signal: any, engine: DydxExecutionService) {
                     ? parseFloat((price * (1 - slDistance)).toFixed(4))
                     : parseFloat((price * (1 + slDistance)).toFixed(4)),
                 tp: price,
+                tpLayers: tpConfig.layers,  // Pass adaptive layers to execution engine
             }
         );
 
@@ -274,17 +281,19 @@ async function managePositions(
         console.log(`[MANAGE] ${symbol} (${isLong ? 'BUY' : 'SELL'}) PnL: ${pnlPct.toFixed(2)}% ($${uPnl.toFixed(2)})`);
 
         // ═══════════════════════════════════════════════════════════════
-        //  TRAILING STOP — lets winners run, protects profit dynamically
-        //  Activates at +0.75% PnL, then trails 40% below peak
-        //  Example: peak 2.0% → floor 1.2% | peak 5.0% → floor 3.0%
+        //  ADAPTIVE TRAILING STOP — per-asset activation & trail distance
         // ═══════════════════════════════════════════════════════════════
+        const tpConfig = getAdaptiveTpConfig(symbol); // Base tier (no candles needed for trailing)
+        const TRAIL_ACTIVATION = tpConfig.trailActivation;
+        const TRAIL_PERCENT = tpConfig.trailPercent;
+
         const prevPeak = peakPnlMap.get(symbol) || 0;
 
         // Update peak (only goes up)
         if (pnlPct > prevPeak) {
             peakPnlMap.set(symbol, pnlPct);
             if (pnlPct >= TRAIL_ACTIVATION && prevPeak < TRAIL_ACTIVATION) {
-                console.log(`${GREEN}📈 TRAIL ACTIVATED: ${symbol} — PnL ${pnlPct.toFixed(2)}% (trail floor: ${(pnlPct * (1 - TRAIL_PERCENT)).toFixed(2)}%)${RESET}`);
+                console.log(`${GREEN}📈 TRAIL ACTIVATED: ${symbol} [${tpConfig.tier}] — PnL ${pnlPct.toFixed(2)}% (act: +${TRAIL_ACTIVATION}%, trail: ${Math.round(TRAIL_PERCENT * 100)}%)${RESET}`);
             }
         }
 
@@ -292,9 +301,9 @@ async function managePositions(
         if (peak >= TRAIL_ACTIVATION) {
             const trailFloor = peak * (1 - TRAIL_PERCENT);
             if (pnlPct < trailFloor) {
-                console.log(`${YELLOW}📉 TRAIL STOP: ${symbol} — Peak ${peak.toFixed(2)}% → Floor ${trailFloor.toFixed(2)}% → Actual ${pnlPct.toFixed(2)}%${RESET}`);
+                console.log(`${YELLOW}📉 TRAIL STOP: ${symbol} [${tpConfig.tier}] — Peak ${peak.toFixed(2)}% → Floor ${trailFloor.toFixed(2)}% → Actual ${pnlPct.toFixed(2)}%${RESET}`);
                 await closeAndRecord(symbol, closeSide, Math.abs(size * currentPrice), currentPrice, pnlPct, uPnl,
-                    `Trailing Stop (peak ${peak.toFixed(2)}%, floor ${trailFloor.toFixed(2)}%, actual ${pnlPct.toFixed(2)}%)`, engine);
+                    `Trailing Stop [${tpConfig.tier}] (peak ${peak.toFixed(2)}%, floor ${trailFloor.toFixed(2)}%, actual ${pnlPct.toFixed(2)}%)`, engine);
                 peakPnlMap.delete(symbol);
                 continue;
             }
@@ -379,18 +388,21 @@ async function handleTakeProfit(
     const leverage = matchedTrade?.leverage || 3;
     const roePct = pnlPct * leverage;
 
-    // TP1: >14% ROE → Close 50%
-    if (roePct > 14.0 && matchedTrade && !matchedTrade.isPartiallyClosed) {
-        console.log(`${GREEN}💰 TP1: ${symbol} (+${roePct.toFixed(2)}% ROE) — Securing 50%${RESET}`);
+    // ADAPTIVE ROE thresholds per asset tier
+    const tpConfig = getAdaptiveTpConfig(symbol);
+
+    // TP1: Partial close at tier-specific ROE
+    if (roePct > tpConfig.roeTP1 && matchedTrade && !matchedTrade.isPartiallyClosed) {
+        console.log(`${GREEN}💰 TP1: ${symbol} [${tpConfig.tier}] (+${roePct.toFixed(2)}% ROE > ${tpConfig.roeTP1}%) — Securing 50%${RESET}`);
         await engine.executeOrder(symbol, closeSide, Math.abs(size * currentPrice) * 0.5, currentPrice, 1, true);
         matchedTrade.isPartiallyClosed = true;
         await matchedTrade.save();
         console.log(`${GREEN}✔ TP1 Saved${RESET}`);
     }
-    // TP2: >40% ROE → Close remainder
-    else if (roePct > 40.0) {
-        console.log(`${GREEN}🚀 TP2 MOONBAG: ${symbol} (+${roePct.toFixed(2)}% ROE) — Closing All${RESET}`);
-        await closeAndRecord(symbol, closeSide, Math.abs(size * currentPrice), currentPrice, pnlPct, uPnl, "TP2 (Moonbag ROE 40%)", engine);
+    // TP2: Full close at tier-specific ROE
+    else if (roePct > tpConfig.roeTP2) {
+        console.log(`${GREEN}🚀 TP2 MOONBAG: ${symbol} [${tpConfig.tier}] (+${roePct.toFixed(2)}% ROE > ${tpConfig.roeTP2}%) — Closing All${RESET}`);
+        await closeAndRecord(symbol, closeSide, Math.abs(size * currentPrice), currentPrice, pnlPct, uPnl, `TP2 [${tpConfig.tier}] (ROE ${roePct.toFixed(0)}% > ${tpConfig.roeTP2}%)`, engine);
     }
 }
 
