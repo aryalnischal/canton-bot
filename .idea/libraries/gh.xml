@@ -1,9 +1,0 @@
-<component name="libraryTable">
-  <library name="gh">
-    <CLASSES>
-      <root url="jar://$PROJECT_DIR$/gh.zip!/" />
-    </CLASSES>
-    <JAVADOC />
-    <SOURCES />
-  </library>
-</component>

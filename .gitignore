@@ -52,3 +52,5 @@ mongodb_data/
 # Secrets
 .env.local
 .env*.local
+
+.idea
