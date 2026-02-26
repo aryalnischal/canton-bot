@@ -1,0 +1,73 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# docker-compose.yaml  •  LOCAL DEVELOPMENT
+# ──────────────────────────────────────────────────────────────────────────────
+name: canton-bot-dev
+
+services:
+  # --- MONGO DB (Local) ---
+  mongodb:
+    image: mongo:6.0
+    container_name: canton_mongodb
+    ports:
+      - "27021:27017"
+    volumes:
+      - mongodb_data:/data/db
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=${MONGO_ROOT_USER}
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_ROOT_PASSWORD}
+    networks:
+      - canton_bot_network
+    healthcheck:
+      test: ["CMD", "mongosh", "--username", "${MONGO_ROOT_USER}", "--password", "${MONGO_ROOT_PASSWORD}", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  # --- NEXT.JS DASHBOARD ---
+  canton_bot:
+    container_name: canton_bot_dev
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    environment:
+      - NEXT_PUBLIC_ENV=local
+      - NEXT_PUBLIC_BASE_URL=http://localhost:3000
+      - NEXT_PUBLIC_CENTRAL_FRONTEND_REDIRECT_URL=http://localhost:3000
+      - NEXT_TELEMETRY_DISABLED=1
+      - DYDX_NETWORK=${DYDX_NETWORK}
+      - DYDX_MNEMONIC=${DYDX_MNEMONIC}
+      - MONGODB_URI=mongodb://${MONGO_ROOT_USER}:${MONGO_ROOT_PASSWORD}@mongodb:27017/canton-bot?authSource=admin
+      - COINGLASS_API_KEY=${COINGLASS_API_KEY}
+      - PORT=3000
+      - NODE_ENV=development
+    volumes:
+      - .:/app
+      - canton_bot_nm:/app/node_modules
+      - canton_bot_next:/app/.next
+    security_opt:
+      - no-new-privileges:true
+    read_only: false
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+    networks:
+      - canton_bot_network
+    tty: true
+    restart: unless-stopped
+
+volumes:
+  canton_bot_nm:
+  canton_bot_next:
+  mongodb_data:
+
+networks:
+  canton_bot_network:
+    external: false   # Setting to false to create the network automatically
