@@ -54,3 +54,4 @@ mongodb_data/
 .env*.local
 
 .idea
+masternode
