@@ -50,7 +50,8 @@ WORKDIR /app
 # Set production environment defaults
 ENV NODE_ENV=production \
     PORT=3000 \
-    NEXT_TELEMETRY_DISABLED=1
+    NEXT_TELEMETRY_DISABLED=1 \
+    PM2_HOME=/tmp/.pm2
 
 # Install PM2 globally for process management
 RUN npm install -g pm2 && npm cache clean --force
