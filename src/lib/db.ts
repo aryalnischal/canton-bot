@@ -25,21 +25,21 @@ async function dbConnect() {
     }
 
     if (!cached.promise) {
-        const opts = {
-            bufferCommands: false, // Disable buffer to fail fast
-            serverApi: {
-                version: '1' as const,
-                strict: true,
-                deprecationErrors: true,
-            },
-            tls: true,
-            tlsAllowInvalidCertificates: false,
-            serverSelectionTimeoutMS: 15000,
-            connectTimeoutMS: 15000,
+        // Only use strict TLS and ServerApi for Atlas connections (+srv)
+        const isAtlas = MONGODB_URI.includes('mongodb+srv');
+        const opts: any = {
+            bufferCommands: false,
+            serverSelectionTimeoutMS: 5000,
+            connectTimeoutMS: 10000,
         };
 
+        if (isAtlas) {
+            opts.serverApi = { version: '1', strict: true, deprecationErrors: true };
+            opts.tls = true;
+        }
+
         cached.promise = mongoose.connect(MONGODB_URI, opts).then((mongoose) => {
-            console.log("✅ MongoDB Connected");
+            console.log(`✅ MongoDB Connected (${isAtlas ? 'Atlas' : 'Local'})`);
             return mongoose;
         });
     }

@@ -1,11 +1,10 @@
 module.exports = {
     apps: [
         {
-            name: "nextjs-app",
-            script: "npm",
-            args: "start",
-            instances: 1,
-            exec_mode: "fork", // use cluster only if NOT using next start (custom server needed)
+            name: "canton-bot",
+            script: "server.js",        // Directly run the standalone server
+            instances: "max",           // Scale across all available CPU cores
+            exec_mode: "cluster",       // Use cluster mode for better performance
             env: {
                 NODE_ENV: "production",
                 PORT: 3000

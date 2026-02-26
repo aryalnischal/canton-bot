@@ -1,0 +1,49 @@
+# ──────────────────────────────────────────────────────────────
+# .dockerignore  —  files excluded from the Docker build context
+# Keeps images lean and prevents secrets from leaking into layers.
+# ──────────────────────────────────────────────────────────────
+
+# --- Version control ---
+.git
+.gitignore
+
+# --- IDE / editor ---
+.idea
+.vscode
+*.iml
+
+# --- Dependencies (re-installed inside the image) ---
+node_modules
+
+# --- Next.js build cache ---
+.next
+out
+
+# --- Secrets & local env files ---
+.env
+.env.*
+!.env.example          # keep the example (non-sensitive) for reference
+
+# --- Test / audit output ---
+coverage
+*.log
+audit-result.json
+positions.json
+
+# --- OS artefacts ---
+.DS_Store
+Thumbs.db
+
+# --- Misc tooling ---
+gh.zip
+gh.tar.gz
+gh_2.86.0_macOS_arm64
+
+# --- Docker files themselves (not needed inside the image) ---
+Dockerfile
+prod.Dockerfile
+docker-compose.yaml
+prod.docker-compose.yaml
+
+# --- TypeScript build info ---
+*.tsbuildinfo

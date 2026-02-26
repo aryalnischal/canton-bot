@@ -1,31 +1,73 @@
-version: "3.8"
+# ──────────────────────────────────────────────────────────────────────────────
+# docker-compose.yaml  •  LOCAL DEVELOPMENT
+# ──────────────────────────────────────────────────────────────────────────────
+name: canton-bot-dev
+
 services:
-  central_frontend:
-#    image: documee7/development:central_frontend
-    container_name: canton_bot
+  # --- MONGO DB (Local) ---
+  mongodb:
+    image: mongo:6.0
+    container_name: canton_mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=${MONGO_ROOT_USER}
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_ROOT_PASSWORD}
+    networks:
+      - canton_bot_network
+    healthcheck:
+      test: ["CMD", "mongosh", "--username", "${MONGO_ROOT_USER}", "--password", "${MONGO_ROOT_PASSWORD}", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  # --- NEXT.JS DASHBOARD ---
+  canton_bot:
+    container_name: canton_bot_dev
     build:
       context: .
       dockerfile: Dockerfile
+    depends_on:
+      mongodb:
+        condition: service_healthy
     ports:
       - "3000:3000"
+    env_file:
+      - .env
     environment:
       - NEXT_PUBLIC_ENV=local
       - NEXT_PUBLIC_BASE_URL=http://localhost:3000
       - NEXT_PUBLIC_CENTRAL_FRONTEND_REDIRECT_URL=http://localhost:3000
-      - NEXT_PUBLIC_USER_REDIRECT_BASE_URL=https://documee.ai
-      - NEXT_PUBLIC_CENTRAL_STRIPE_PUBLISHABLE_KEY=pk_test_51RPyww2KXa6OeB3whc0QJG39tvDANCYftH799pSPfqO8hlc20YNzlb0LG5iofXpb0Oi8qhFD8Gv30HEwXzWnBJSC00tPLZbvWt
       - NEXT_TELEMETRY_DISABLED=1
+      - DYDX_NETWORK=${DYDX_NETWORK}
+      - DYDX_MNEMONIC=${DYDX_MNEMONIC}
+      - MONGODB_URI=mongodb://${MONGO_ROOT_USER}:${MONGO_ROOT_PASSWORD}@mongodb:27017/canton-bot?authSource=admin
+      - COINGLASS_API_KEY=${COINGLASS_API_KEY}
+      - PORT=3000
+      - NODE_ENV=development
     volumes:
       - .:/app
-      - /app/node_modules
-      - /app/.next
-    tty: true
+      - canton_bot_nm:/app/node_modules
+      - canton_bot_next:/app/.next
+    security_opt:
+      - no-new-privileges:true
+    read_only: false
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
     networks:
       - canton_bot_network
+    tty: true
+    restart: unless-stopped
+
+volumes:
+  canton_bot_nm:
+  canton_bot_next:
+  mongodb_data:
 
 networks:
   canton_bot_network:
-    external: true
-
-volumes:
-  canton_bot_node_modules:
+    external: false   # Setting to false to create the network automatically
