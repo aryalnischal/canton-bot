@@ -134,7 +134,7 @@ export function generateTradeSignal(metrics: ExchangeMetric[], manualOverride?: 
 
         // 2. TREND SCORING (CONDITIONAL)
         const minMove = timeframe === '15m' ? 0.35 : 1.0;
-        let threshold = 4.0; // RAISED TRIGGER (Was 3) - Quality Control
+        let threshold = 2.5; // BALANCED TRIGGER (Was 4.0 — fires on moderate trend + volume)
 
         // STOCHASTIC / RSI PROXY (Smart Entry)
         // Range Position: 0 = Low, 1 = High

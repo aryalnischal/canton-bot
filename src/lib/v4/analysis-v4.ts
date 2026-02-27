@@ -191,14 +191,14 @@ export function generateV4Signal(
     else if (effectiveFR > FUNDING_LONG_THRESH) fundingSignal = 'SELL';
 
     if (finalScore > 0.6 || fundingSignal === 'BUY') {
-        if (!onChain.isBullish && finalScore < 0.85 && fundingSignal !== 'BUY') {
+        if (!onChain.isBullish && finalScore < 0.70 && fundingSignal !== 'BUY') {
             isBlocked = true;
             blockReason = "On-Chain Bearish";
         } else {
             action = 'BUY';
         }
     } else if (finalScore < 0.4 || fundingSignal === 'SELL') {
-        if (onChain.isBullish && finalScore > 0.15 && fundingSignal !== 'SELL') {
+        if (onChain.isBullish && finalScore > 0.30 && fundingSignal !== 'SELL') {
             isBlocked = true;
             blockReason = "On-Chain Bullish";
         } else {

@@ -73,9 +73,9 @@ async function handleSignals(
             }
         } catch { /* DB not available */ }
 
-        // CONFIDENCE GATE (45% = 3-of-5 pillar majority consensus)
-        if (signal.confidence <= 45) {
-            console.log(`${YELLOW}skipped (confidence ${signal.confidence}% < 45%)${RESET}`);
+        // CONFIDENCE GATE (40% = multi-engine consensus — proven working value)
+        if (signal.confidence <= 40) {
+            console.log(`${YELLOW}skipped (confidence ${signal.confidence}% < 40%)${RESET}`);
             continue;
         }
 

@@ -78,8 +78,8 @@ export async function fetchOnChainMetrics(symbol: string): Promise<OnChainMetric
         tvlChange,
         btcInflow: 0,
         usdcInflow: 0,
-        isBullish: tvlChange > 1.0,    // DeFi growing significantly
-        isBearish: tvlChange < -1.0    // DeFi TVL declining
+        isBullish: tvlChange > 0.3,    // DeFi growing (was 1.0 — too strict)
+        isBearish: tvlChange < -0.3    // DeFi TVL declining (was -1.0)
     };
 
     // Only log on fresh fetch (cached results are silent)

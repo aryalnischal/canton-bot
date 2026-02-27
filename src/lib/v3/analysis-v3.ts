@@ -103,8 +103,8 @@ export function generateV3Signal(
     let action: 'BUY' | 'SELL' | 'NEUTRAL' = 'NEUTRAL';
 
     // Thresholds
-    if (score >= 5.5) action = 'BUY';
-    if (score <= -4) action = 'SELL';
+    if (score >= 3.5) action = 'BUY';   // Was 5.5 — MACD + 1 factor can now fire
+    if (score <= -3.5) action = 'SELL'; // Was -4 — symmetric with BUY
 
     return {
         action,
