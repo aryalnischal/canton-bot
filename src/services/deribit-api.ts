@@ -22,7 +22,14 @@ export async function fetchDeribitOptions(currency: string = 'BTC'): Promise<Der
 }
 
 export async function calculateMaxPain(currency: string = 'BTC'): Promise<number> {
-    const options = await fetchDeribitOptions(currency);
+    // Normalize: dYdX symbols are "BTC-USD" but Deribit expects "BTC"
+    const normalized = currency.replace(/-USD$/, '').toUpperCase();
+
+    // Deribit only has options for BTC, ETH, SOL — skip others
+    const SUPPORTED = ['BTC', 'ETH', 'SOL'];
+    if (!SUPPORTED.includes(normalized)) return 0;
+
+    const options = await fetchDeribitOptions(normalized);
     if (options.length === 0) return 0;
 
     // Parse definitions from instrument_name (e.g., "BTC-29DEC23-30000-C")
