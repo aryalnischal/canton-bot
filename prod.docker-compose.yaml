@@ -93,11 +93,11 @@ services:
     image: amir20/dozzle:latest
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - ./dozzle-users.yml:/data/users.yml
     ports:
       - "8888:8080"
     environment:
-      - DOZZLE_USERNAME=${DOZZLE_USERNAME}
-      - DOZZLE_PASSWORD=${DOZZLE_PASSWORD}
+      - DOZZLE_AUTH_PROVIDER=simple
     networks:
       - canton_bot_network
     restart: unless-stopped
