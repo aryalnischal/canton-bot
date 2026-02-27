@@ -64,6 +64,28 @@ services:
     restart: unless-stopped
 
 
+  # --- TRADING BOT ENGINE ---
+  trading_bot:
+    container_name: trading_bot_dev
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: npm run bot
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=development
+    volumes:
+      - .:/app
+      - canton_bot_nm:/app/node_modules
+    networks:
+      - canton_bot_network
+    restart: unless-stopped
+    tty: true
+
   # --- DOZZLE LOG VIEWER ---
   dozzle:
     container_name: dozzle_prod
