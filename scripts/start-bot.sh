@@ -9,5 +9,5 @@ echo "   MongoDB: Cloud Atlas (auto-connect)"
 echo "   Network: ${DYDX_NETWORK:-testnet}"
 echo ""
 
-npx tsx scripts/standalone-bot.ts
+npx -y tsx scripts/standalone-bot.ts
 
