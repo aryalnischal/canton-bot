@@ -10,3 +10,4 @@ echo "   Network: ${DYDX_NETWORK:-testnet}"
 echo ""
 
 tsx scripts/standalone-bot.ts
+
