@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 
 # Canton Trading Bot - Startup Script
 # MongoDB connects automatically via MONGODB_URI in .env.local
@@ -9,5 +9,5 @@ echo "   MongoDB: Cloud Atlas (auto-connect)"
 echo "   Network: ${DYDX_NETWORK:-testnet}"
 echo ""
 
-tsx scripts/standalone-bot.ts
+npx tsx scripts/standalone-bot.ts
 
