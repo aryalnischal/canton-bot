@@ -87,6 +87,25 @@ services:
     networks:
       - canton_bot_network
 
+  # --- DOZZLE LOG VIEWER ---
+  dozzle:
+    container_name: dozzle_prod
+    image: amir20/dozzle:latest
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      - "8888:8080"
+    networks:
+      - canton_bot_network
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+
 volumes:
   mongodb_data_prod:
 

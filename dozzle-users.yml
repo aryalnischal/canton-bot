@@ -1,0 +1,6 @@
+# Dozzle Authentication Configuration
+# Passwords must be bcrypt hashed.
+# The password below is a bcrypt hash for: cantonbot123!
+users:
+  admin:
+    password: $2a$12$N9qo8uLOickgx2ZMRZoMyeIjZAgCcU7UXGJJWSuTDpCDLXzLP5re.
