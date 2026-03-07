@@ -299,11 +299,11 @@ export function generateV5Consensus(
     const finalConfidence = Math.min(baseConfidence + confidenceBoost, 100);
 
     // CONFIDENCE-BASED LEVERAGE TIERS
-    // 45-55% → 3x (conservative), 55-65% → 5x (standard), 65%+ → 10x (max conviction)
+    // Default 5x, scaling up: 45-55% → 5x, 55-65% → 7x, 65%+ → 10x
     if (action !== 'NEUTRAL') {
         if (finalConfidence >= 65) leverage = 10;
-        else if (finalConfidence >= 55) leverage = 5;
-        else leverage = 3;
+        else if (finalConfidence >= 55) leverage = 7;
+        else leverage = 5;
 
         // FUNDING RATE still caps leverage (safety override)
         if (action === 'BUY' && coinglass.fundingRate > 0.01) {
