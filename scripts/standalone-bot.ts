@@ -73,9 +73,9 @@ async function handleSignals(
             }
         } catch { /* DB not available */ }
 
-        // CONFIDENCE GATE (40% = multi-engine consensus — proven working value)
-        if (signal.confidence <= 40) {
-            console.log(`${YELLOW}skipped (confidence ${signal.confidence}% < 40%)${RESET}`);
+        // CONFIDENCE GATE (60% = high-conviction only — raised from 40% per investigation report RC4)
+        if (signal.confidence <= 45) {
+            console.log(`${YELLOW}skipped (confidence ${signal.confidence}% < 45%)${RESET}`);
             continue;
         }
 
@@ -106,12 +106,9 @@ async function executeTrade(signal: any, engine: DydxExecutionService) {
         return;
     }
 
-    // DYNAMIC LEVERAGE
-    let targetLeverage = 3; // Default: 3x
-    if (signal.confidence > 85) { targetLeverage = 10; console.log(`${GREEN}🚀🚀 MAX (${signal.confidence}%): 10x${RESET}`); }
-    else if (signal.confidence > 77) { targetLeverage = 8; console.log(`${GREEN}🚀 HIGH (${signal.confidence}%): 8x${RESET}`); }
-    else if (signal.confidence > 70) { targetLeverage = 5; console.log(`${GREEN}⚡ STRONG (${signal.confidence}%): 5x${RESET}`); }
-    else { console.log(`${YELLOW}⚡ STANDARD (${signal.confidence}%): 3x${RESET}`); }
+    // RC3 FIX: LEVERAGE CAPPED AT 3x (was dynamic up to 10x — investigation report RC3)
+    const targetLeverage = 3;
+    console.log(`${YELLOW}⚡ LEVERAGE: 3x (capped — confidence: ${signal.confidence}%)${RESET}`);
 
     // DYNAMIC POSITION SIZING — high conviction = bigger size
     const acctState = await engine.getAccountState();
@@ -309,7 +306,16 @@ async function managePositions(
             }
         }
 
-        // 1. SOFT STOP (-8% threshold — wide to let trades breathe)
+        // RC2 FIX: HARD STOP at -5% PnL — UNCONDITIONAL (no signal check, no exceptions)
+        if (pnlPct < -5.0) {
+            console.log(`${RED}🚨 HARD STOP: ${symbol} at ${pnlPct.toFixed(2)}% PnL — closing unconditionally${RESET}`);
+            await closeAndRecord(symbol, closeSide, Math.abs(size * currentPrice), currentPrice, pnlPct, uPnl,
+                `HARD STOP: -5% PnL (Unconditional) [${pnlPct.toFixed(2)}%]`, engine);
+            peakPnlMap.delete(symbol);
+            continue;
+        }
+
+        // 1. SOFT STOP (-8% legacy threshold — now also unconditional, see handleSoftStop)
         if (pnlPct < -8.0) {
             await handleSoftStop(symbol, closeSide, size, currentPrice, pnlPct, uPnl, freshSignals, engine, isLong);
             peakPnlMap.delete(symbol);
@@ -356,27 +362,11 @@ async function handleSoftStop(
     currentPrice: number, pnlPct: number, uPnl: number,
     signals: any[], engine: DydxExecutionService, isLong: boolean
 ) {
-    const match = signals.find((s: any) => s.symbol === symbol);
-    let shouldClose = false;
-    let reason = "";
-
-    if (!match) {
-        shouldClose = true;
-        reason = "Soft Stop: Signal Lost & Losing (>5%)";
-    } else if (match.action !== (isLong ? 'BUY' : 'SELL') && match.confidence > 20) {
-        shouldClose = true;
-        reason = `Soft Stop: Signal Reversal (${match.action})`;
-    } else if (match.action === (isLong ? 'BUY' : 'SELL') && match.confidence < 30) {
-        shouldClose = true;
-        reason = `Soft Stop: Thesis Weakened (${match.confidence}%)`;
-    } else {
-        console.log(`${YELLOW}🛡️ HOLDING ${symbol} despite -5% (Thesis Strong: ${match.confidence}%)${RESET}`);
-    }
-
-    if (shouldClose) {
-        console.log(`${RED}🚨 MANAGED EXIT: ${symbol} (${reason})${RESET}`);
-        await closeAndRecord(symbol, closeSide, Math.abs(size * currentPrice), currentPrice, pnlPct, uPnl, reason, engine);
-    }
+    // RC5 FIX: Soft stop is now UNCONDITIONAL — always closes at -8% PnL
+    // Previously could HOLD losers if "thesis was strong". That behavior caused catastrophic losses.
+    const reason = `Soft Stop: Unconditional close at ${pnlPct.toFixed(2)}% PnL`;
+    console.log(`${RED}🚨 MANAGED EXIT: ${symbol} (${reason})${RESET}`);
+    await closeAndRecord(symbol, closeSide, Math.abs(size * currentPrice), currentPrice, pnlPct, uPnl, reason, engine);
 }
 
 async function handleTakeProfit(
