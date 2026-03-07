@@ -195,24 +195,16 @@ export function generateV5Consensus(
     } else {
         action = rawScore > 0 ? 'BUY' : 'SELL';
 
-        // DYNAMIC LEVERAGE SCALING
-        if (absScore >= 0.85) leverage = 10;
-        else if (absScore >= 0.70) leverage = 7;
-        else if (absScore >= 0.50) leverage = 5;
-        else leverage = 3;
+        // Leverage set below after confidence is calculated
+        leverage = 3; // temporary default
 
-        // FUNDING RATE LEVERAGE MODIFIER
-        if (action === 'BUY' && coinglass.fundingRate > 0.01) {
-            leverage = Math.max(2, Math.ceil(leverage * 0.75));
-            reasons.push(`📉 FR: Longs crowded (${(coinglass.fundingRate * 100).toFixed(3)}%), lev reduced`);
-        }
-        if (action === 'SELL' && coinglass.fundingRate < -0.01) {
-            leverage = Math.max(2, Math.ceil(leverage * 0.75));
-            reasons.push(`📉 FR: Shorts crowded (${(coinglass.fundingRate * 100).toFixed(3)}%), lev reduced`);
-        }
+        // (Funding rate modifiers moved to after confidence calculation below)
         if (Math.abs(coinglass.fundingRate) > 0.03) {
-            leverage = Math.min(leverage, 3);
             reasons.push(`⚠️ Extreme FR (${(coinglass.fundingRate * 100).toFixed(3)}%): Lev capped 3x`);
+        } else if (action === 'BUY' && coinglass.fundingRate > 0.01) {
+            reasons.push(`📉 FR: Longs crowded (${(coinglass.fundingRate * 100).toFixed(3)}%)`);
+        } else if (action === 'SELL' && coinglass.fundingRate < -0.01) {
+            reasons.push(`📉 FR: Shorts crowded (${(coinglass.fundingRate * 100).toFixed(3)}%)`);
         }
     }
 
@@ -305,6 +297,26 @@ export function generateV5Consensus(
     // CONFIDENCE FORMULA: base (from score) + Sovereign boost
     const baseConfidence = Math.round(Math.min(absScore * 110, 100));
     const finalConfidence = Math.min(baseConfidence + confidenceBoost, 100);
+
+    // CONFIDENCE-BASED LEVERAGE TIERS
+    // 45-55% → 3x (conservative), 55-65% → 5x (standard), 65%+ → 10x (max conviction)
+    if (action !== 'NEUTRAL') {
+        if (finalConfidence >= 65) leverage = 10;
+        else if (finalConfidence >= 55) leverage = 5;
+        else leverage = 3;
+
+        // FUNDING RATE still caps leverage (safety override)
+        if (action === 'BUY' && coinglass.fundingRate > 0.01) {
+            leverage = Math.max(2, Math.ceil(leverage * 0.75));
+        }
+        if (action === 'SELL' && coinglass.fundingRate < -0.01) {
+            leverage = Math.max(2, Math.ceil(leverage * 0.75));
+        }
+        if (Math.abs(coinglass.fundingRate) > 0.03) {
+            leverage = Math.min(leverage, 3);
+        }
+        reasons.push(`⚡ Leverage: ${leverage}x (Conf: ${finalConfidence}%)`);
+    }
 
     return {
         action,
