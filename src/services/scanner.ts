@@ -142,16 +142,20 @@ export class ScannerService {
     // Per-symbol processing (called by batch loop)
     private async _processSymbol(symbol: string, markets: any, onChainData: any): Promise<any | null> {
         try {
-            let candles: any, imbalance: any, maxPain: any, coinglassData: any;
+            let candles: any, candles4h: any, imbalance: any, maxPain: any, coinglassData: any;
             let attempts = 0;
             let success = false;
 
             while (!success && attempts < 3) {
                 try {
                     // Fetch per-symbol data in parallel (on-chain already fetched once)
-                    [candles, imbalance, maxPain, coinglassData] = await Promise.all([
+                    // V6 ENGINE: Now also fetching 4H candles for multi-timeframe Sovereign–SulCrypto hybrid
+                    [candles, candles4h, imbalance, maxPain, coinglassData] = await Promise.all([
                         (this.indexer as any).markets.getPerpetualMarketCandles(
                             symbol, '15MINS', undefined, undefined, 50
+                        ),
+                        (this.indexer as any).markets.getPerpetualMarketCandles(
+                            symbol, '4HOURS', undefined, undefined, 50
                         ),
                         getOrderbookImbalance(this.indexer, symbol),
                         calculateMaxPain(symbol).catch(() => 0),
@@ -183,6 +187,18 @@ export class ScannerService {
                 v: parseFloat(c.baseTokenVolume)
             })).reverse();
 
+            // V6 ENGINE: Normalize 4H candles for multi-timeframe analysis
+            const normalizedCandles4h = candles4h?.candles?.length
+                ? candles4h.candles.map((c: any) => ({
+                    t: new Date(c.startedAt).getTime(),
+                    o: parseFloat(c.open),
+                    h: parseFloat(c.high),
+                    l: parseFloat(c.low),
+                    c: parseFloat(c.close),
+                    v: parseFloat(c.baseTokenVolume)
+                })).reverse()
+                : [];
+
             const currentPrice = parseFloat(markets[symbol].oraclePrice || markets[symbol].price || "0");
             const open24h = normalizedCandles[0]?.o || currentPrice;
             const change = open24h > 0 ? ((currentPrice - open24h) / open24h) * 100 : 0;
@@ -209,12 +225,31 @@ export class ScannerService {
                 metrics as any, normalizedCandles, syntheticOB,
                 coinglassData,    // REAL CoinGlass data (was: mock object with random values)
                 onChainData,      // REAL on-chain data (was: mock object with random values)
-                maxPain, parseFloat(markets[symbol].nextFundingRate || "0")
+                maxPain, parseFloat(markets[symbol].nextFundingRate || "0"),
+                normalizedCandles4h  // V6 ENGINE: 4H candles for Sovereign–SulCrypto hybrid
             );
 
             console.log(`[SCANNER] ${symbol} Score: ${consensus.score.toFixed(3)} (Conf: ${consensus.confidence}%)`);
 
-            return { symbol, price: currentPrice, change24h: change, candles: normalizedCandles, ...consensus };
+            // V6 INTELLIGENCE LAYER LOGGING
+            if (consensus.v6Intel) {
+                const v6 = consensus.v6Intel;
+                const gateIcon = v6.atrGate ? '🔓' : '🔒';
+                const biasIcon = v6.bias4h === 'BULLISH' ? '📈' : v6.bias4h === 'BEARISH' ? '📉' : '➡️';
+                console.log(`[V6 INTEL] ${symbol} ${gateIcon} ATR Gate | ${biasIcon} 4H ${v6.bias4h} | Entry: ${v6.sovereignEntry} | Boost: +${v6.sovereignBoost}%`);
+                if (v6.atrExit) {
+                    console.log(`[V6 EXIT] ${symbol} SL: ${v6.atrExit.slPct.toFixed(2)}% ($${v6.atrExit.slDistance.toFixed(2)}) | TP: ${v6.atrExit.tpPct.toFixed(2)}% ($${v6.atrExit.tpDistance.toFixed(2)}) | ATR: $${v6.atrExit.atr.toFixed(2)}`);
+                }
+            }
+
+            return {
+                symbol, price: currentPrice, change24h: change, candles: normalizedCandles,
+                ...consensus,
+                atrSl: consensus.v6Intel?.atrExit?.slDistance,
+                atrTp: consensus.v6Intel?.atrExit?.tpDistance,
+                atrTrail: consensus.v6Intel?.atrExit?.trailDistance,
+                atr: consensus.v6Intel?.atrExit?.atr
+            };
         } catch (err: any) {
             console.warn(`[SCANNER] Failed to fetch ${symbol}:`, err.message || err);
             return null;

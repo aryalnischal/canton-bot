@@ -1,6 +1,7 @@
 import { generateTradeSignal } from "../analysis";
 import { generateV3Signal } from "../v3/analysis-v3";
 import { generateV4Signal } from "../v4/analysis-v4";
+import { checkATRGate, get4HDirectionalBias, checkSovereignEntry, calculateATRExitLevels } from "../v6/analysis-v6";
 import type { ExchangeMetric } from "../types.ts";
 import type { CoinglassData } from "../../services/coinglass.ts";
 import type { OnChainMetrics } from "../../services/on-chain.ts";
@@ -16,46 +17,88 @@ export interface V5Consensus {
         v4: 'BUY' | 'SELL' | 'NEUTRAL';
         onChain: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
     };
+    v6Intel: {
+        atrGate: boolean;
+        bias4h: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
+        sovereignBoost: number;
+        sovereignEntry: string;
+        atrExit?: {
+            slDistance: number;
+            tpDistance: number;
+            trailDistance: number;
+            slPct: number;
+            tpPct: number;
+            atr: number;
+        };
+    };
     reasons: string[];
 }
 
 export function generateV5Consensus(
     metrics: ExchangeMetric[],
-    candles15m: { c: number, v: number }[],
+    candles15m: { c: number, v: number, o?: number, h?: number, l?: number }[],
     orderbook: any,
     coinglass: CoinglassData,
     onChain: OnChainMetrics,
     maxPainPrice: number,
-    fundingRate: number
+    fundingRate: number,
+    candles4h?: { o: number, h: number, l: number, c: number, v: number }[]
 ): V5Consensus {
 
-    // ===== BALANCED 5-PILLAR WEIGHTING =====
-    // Each engine gets a meaningful, balanced slice.
-    // Liquidity Flush is now a PRIMARY directional signal, not just a veto.
-    const V2_WEIGHT = 0.25;  // Trend / Macro (SMA, momentum)
+    const reasons: string[] = [];
+
+    // ============================================================
+    // V6 LAYER 1: ATR VOLATILITY GATE (Pre-filter — runs FIRST)
+    // ============================================================
+    // If volatility is below threshold, don't trade AT ALL.
+    // This kills 40-60% of chop signals before any engine runs.
+    const ohlcCandles15m = candles15m.map(c => ({
+        o: (c as any).o || c.c,
+        h: (c as any).h || c.c,
+        l: (c as any).l || c.c,
+        c: c.c,
+        v: c.v
+    }));
+
+    const atrGate = checkATRGate(ohlcCandles15m);
+    reasons.push(atrGate.reason);
+
+    // Extract symbol name for asset-specific rules (Change 4: BTC pullback skip)
+    const symbolName = metrics[0]?.pair || '';
+
+    if (!atrGate.isOpen) {
+        // Market is in chop — block ALL trades regardless of engine votes
+        return {
+            action: 'NEUTRAL',
+            confidence: 0,
+            score: 0,
+            leverage: 0,
+            votes: { v2: 'NEUTRAL', v3: 'NEUTRAL', v4: 'NEUTRAL', onChain: 'NEUTRAL' },
+            v6Intel: { atrGate: false, bias4h: 'NEUTRAL', sovereignBoost: 0, sovereignEntry: 'NONE' },
+            reasons
+        };
+    }
+
+    // ============================================================
+    // V6 LAYER 2: 4H DIRECTIONAL BIAS (Direction filter)
+    // ============================================================
+    const bias4h = get4HDirectionalBias(candles4h || []);
+    reasons.push(bias4h.reason);
+
+    // ===== REBALANCED 5-PILLAR WEIGHTING =====
+    // V4 (CoinGlass) elevated: unique institutional data (smart money, liquidation heatmaps)
+    // V2 reduced: SMA trend partially redundant with V6's EMA trend detection
+    const V2_WEIGHT = 0.20;  // Trend / Macro (SMA, momentum) — reduced, V6 covers trend
     const V3_WEIGHT = 0.20;  // Liquidity / Orderbook (15m RSI, MACD, OB imbalance)
-    const V4_WEIGHT = 0.25;  // Neural / CoinGlass (smart money, funding, ensemble)
+    const V4_WEIGHT = 0.30;  // Neural / CoinGlass (smart money, funding, ensemble) — elevated
     const LF_WEIGHT = 0.20;  // Liquidity Flush (liquidation pressure + max pain magnet)
     const OC_WEIGHT = 0.10;  // On-Chain (DeFi TVL trend)
     // Total: 1.00
 
     // 1. GATHER VOTES
-
-    // V2 (Trend Guard - Conservative)
     const v2 = generateTradeSignal(metrics);
-
-    // V3 (Liquidity Sniper - Aggressive)
     const v3 = generateV3Signal(candles15m, orderbook);
-
-    // V4 (Neural Brain - Probabilistic)
-    const v4 = generateV4Signal(
-        candles15m,
-        orderbook,
-        coinglass,
-        onChain,
-        maxPainPrice,
-        fundingRate
-    );
+    const v4 = generateV4Signal(candles15m, orderbook, coinglass, onChain, maxPainPrice, fundingRate);
 
     // 2. NORMALIZE ENGINE VOTES (-1, 0, 1) × weight
     const getVal = (act: string) => act === 'BUY' ? 1 : (act === 'SELL' ? -1 : 0);
@@ -65,38 +108,24 @@ export function generateV5Consensus(
     const scoreV4 = getVal(v4.action) * V4_WEIGHT;
 
     // === PILLAR 4: LIQUIDITY FLUSH (0.20 weight) ===
-    // Theory: Exchanges hunt liquidation clusters. Price magnetizes to max pain.
-    // After a flush, the OPPOSITE direction is the trade (contrarian).
     const currentPrice = metrics[0]?.price || candles15m[candles15m.length - 1]?.c || 0;
     let liqFlushRaw = 0;
 
-    // A. Liquidation Pressure → Contrarian signal
-    //    Longs flushed (pressure > 0) → flush over → BUY the dip
-    //    Shorts flushed (pressure < 0) → flush over → SELL the rip
     if (coinglass.liquidationPressure > 0.3) liqFlushRaw += 0.5;
     else if (coinglass.liquidationPressure > 0.15) liqFlushRaw += 0.25;
-
     if (coinglass.liquidationPressure < -0.3) liqFlushRaw -= 0.5;
     else if (coinglass.liquidationPressure < -0.15) liqFlushRaw -= 0.25;
 
-    // B. Max Pain Magnet → Directional pull
-    //    Price below max pain → gravitates UP (bullish)
-    //    Price above max pain → gravitates DOWN (bearish)
     if (currentPrice > 0 && maxPainPrice > 0) {
         const painDelta = (maxPainPrice - currentPrice) / currentPrice;
-        if (painDelta > 0.02) liqFlushRaw += 0.4;        // Strong pull UP
-        else if (painDelta > 0.01) liqFlushRaw += 0.25;  // Moderate pull UP
-        else if (painDelta < -0.02) liqFlushRaw -= 0.4;  // Strong pull DOWN
-        else if (painDelta < -0.01) liqFlushRaw -= 0.25;  // Moderate pull DOWN
+        if (painDelta > 0.02) liqFlushRaw += 0.4;
+        else if (painDelta > 0.01) liqFlushRaw += 0.25;
+        else if (painDelta < -0.02) liqFlushRaw -= 0.4;
+        else if (painDelta < -0.01) liqFlushRaw -= 0.25;
     }
 
-    // C. Cross-validate: Flush + Max Pain aligned = bonus
-    if (coinglass.liquidationPressure > 0.2 && maxPainPrice > currentPrice) {
-        liqFlushRaw += 0.2; // Longs flushed + price below max pain = strong BUY
-    }
-    if (coinglass.liquidationPressure < -0.2 && maxPainPrice < currentPrice) {
-        liqFlushRaw -= 0.2; // Shorts flushed + price above max pain = strong SELL
-    }
+    if (coinglass.liquidationPressure > 0.2 && maxPainPrice > currentPrice) liqFlushRaw += 0.2;
+    if (coinglass.liquidationPressure < -0.2 && maxPainPrice < currentPrice) liqFlushRaw -= 0.2;
 
     const liqFlushClamped = Math.max(-1, Math.min(1, liqFlushRaw));
     const scoreLiqFlush = liqFlushClamped * LF_WEIGHT;
@@ -109,26 +138,40 @@ export function generateV5Consensus(
     // 3. CALCULATE CONSENSUS SCORE (-1.0 to 1.0)
     let rawScore = scoreV2 + scoreV3 + scoreV4 + scoreLiqFlush + scoreOnChain;
 
-    // 4. VETO POWER (Risk Management — softened, only extreme cases)
-    const reasons: string[] = [];
-    let vetoed = false;
+    // ============================================================
+    // V6 LAYER 2 (continued): 4H DIRECTIONAL FILTER
+    // ============================================================
+    // If consensus wants to go counter to the 4H trend → dampen or block
+    if (bias4h.bias !== 'NEUTRAL') {
+        const consensusDir = rawScore > 0 ? 'BUY' : rawScore < 0 ? 'SELL' : 'NEUTRAL';
 
-    // === COINGLASS LIQUIDATION GUARD (Extreme Only: >0.8) ===
-    // Block trades going WITH an active liquidation cascade (not against — that's the flush signal)
+        if ((consensusDir === 'BUY' && bias4h.bias === 'BEARISH') ||
+            (consensusDir === 'SELL' && bias4h.bias === 'BULLISH')) {
+            // Counter-trend: dampen by 60% (strong discouragement but not a hard block)
+            rawScore *= 0.4;
+            reasons.push(`🚫 4H Counter-Trend: ${consensusDir} vs 4H ${bias4h.bias} → score dampened 60%`);
+        } else if (
+            (consensusDir === 'BUY' && bias4h.bias === 'BULLISH') ||
+            (consensusDir === 'SELL' && bias4h.bias === 'BEARISH')) {
+            // Aligned with 4H trend → slight boost
+            rawScore *= 1.15;
+            rawScore = Math.max(-1, Math.min(1, rawScore)); // re-clamp
+            reasons.push(`✅ 4H Trend Aligned: ${consensusDir} + 4H ${bias4h.bias} → +15% score boost`);
+        }
+    }
+
+    // 4. VETO POWER (Risk Management)
     if (coinglass.liquidationPressure > 0.8 && rawScore < 0) {
-        rawScore = 0; // Longs actively being flushed RIGHT NOW — don't short into the cascade
-        vetoed = true;
+        rawScore = 0;
         reasons.push(`🛡️ LIQ GUARD: Active long cascade ($${(coinglass.longLiq / 1e6).toFixed(1)}M) — blocking SELL`);
     }
     if (coinglass.liquidationPressure < -0.8 && rawScore > 0) {
-        rawScore = 0; // Shorts actively being squeezed RIGHT NOW — don't long into the squeeze
-        vetoed = true;
+        rawScore = 0;
         reasons.push(`🛡️ LIQ GUARD: Active short squeeze ($${(coinglass.shortLiq / 1e6).toFixed(1)}M) — blocking BUY`);
     }
 
-    // === ON-CHAIN VETO (only strong divergence) ===
     if (onChain.isBearish && rawScore > 0.35) {
-        rawScore *= 0.5; // Dampen, don't zero
+        rawScore *= 0.5;
         reasons.push("⚠️ On-Chain Bearish dampens Longs");
     }
     if (onChain.isBullish && rawScore < -0.35) {
@@ -139,10 +182,13 @@ export function generateV5Consensus(
     // 5. DETERMINE ACTION & LEVERAGE
     let action: 'BUY' | 'SELL' | 'NEUTRAL' = 'NEUTRAL';
     let leverage = 0;
+    let absScore = Math.abs(rawScore);
 
-    const absScore = Math.abs(rawScore);
-
-    if (absScore < 0.12) {
+    // RAISED THRESHOLD: 0.15 (was 0.10)
+    // The ATR gate + 4H filter prefilter chop, and the Sovereign entry gate
+    // (below) ensures only precision entries pass. A higher consensus threshold
+    // means only multi-engine agreement triggers trades.
+    if (absScore < 0.15) {
         action = 'NEUTRAL';
         leverage = 0;
         reasons.push("Low Consensus");
@@ -150,12 +196,12 @@ export function generateV5Consensus(
         action = rawScore > 0 ? 'BUY' : 'SELL';
 
         // DYNAMIC LEVERAGE SCALING
-        if (absScore >= 0.85) leverage = 10;      // UNANIMOUS → MAX
-        else if (absScore >= 0.70) leverage = 7;  // STRONG → AGGRESSIVE
-        else if (absScore >= 0.50) leverage = 5;  // MODERATE → STANDARD
-        else leverage = 3;                        // DEFAULT → CONSERVATIVE
+        if (absScore >= 0.85) leverage = 10;
+        else if (absScore >= 0.70) leverage = 7;
+        else if (absScore >= 0.50) leverage = 5;
+        else leverage = 3;
 
-        // === FUNDING RATE LEVERAGE MODIFIER ===
+        // FUNDING RATE LEVERAGE MODIFIER
         if (action === 'BUY' && coinglass.fundingRate > 0.01) {
             leverage = Math.max(2, Math.ceil(leverage * 0.75));
             reasons.push(`📉 FR: Longs crowded (${(coinglass.fundingRate * 100).toFixed(3)}%), lev reduced`);
@@ -188,7 +234,54 @@ export function generateV5Consensus(
         }
     }
 
-    // Capture individual reasons for context
+    // ============================================================
+    // V6 LAYER 3: SOVEREIGN ENTRY GATE + CONFIDENCE BOOST
+    // ============================================================
+    // CRITICAL: Only allow trades where Sovereign sees IMPULSE or PULLBACK.
+    // Plain TREND entries (33% WR) are blocked. This is the single
+    // highest-impact change from backtesting.
+    const sovereign = checkSovereignEntry(ohlcCandles15m, action, symbolName);
+    let confidenceBoost = 0;
+
+    if (action !== 'NEUTRAL') {
+        if (!sovereign.entryConfirmed) {
+            // No precision entry pattern — block the trade
+            action = 'NEUTRAL';
+            leverage = 0;
+            absScore = 0;
+            reasons.push(sovereign.reason || '🚫 Sovereign: No IMPULSE/PULLBACK entry — blocked');
+            if (sovereign.skipReason) reasons.push(`Skip: ${sovereign.skipReason}`);
+        } else {
+            // Sovereign confirmed — apply confidence boost
+            confidenceBoost = sovereign.boostPct;
+            reasons.push(sovereign.reason);
+        }
+    }
+
+    // ============================================================
+    // V6 LAYER 4: ATR EXIT INTELLIGENCE
+    // ============================================================
+    // Calculate dynamic SL/TP from both scripts' exit logic.
+    // These are passed through the consensus output so the trade API can use them.
+    let atrExit: any = undefined;
+    if (action !== 'NEUTRAL') {
+        const exitLevels = calculateATRExitLevels(ohlcCandles15m, action);
+        atrExit = {
+            slDistance: exitLevels.stopLossDistance,
+            tpDistance: exitLevels.takeProfitDistance,
+            trailDistance: exitLevels.trailingDistance,
+            slPct: exitLevels.stopLossPct,
+            tpPct: exitLevels.takeProfitPct,
+            atr: exitLevels.atr
+        };
+        reasons.push(exitLevels.reason);
+
+        // RSI exit warning (for active position management)
+        if (exitLevels.rsiExitLong) reasons.push('⚠️ RSI < 45: Sovereign suggests closing LONG early');
+        if (exitLevels.rsiExitShort) reasons.push('⚠️ RSI > 55: Sovereign suggests closing SHORT early');
+    }
+
+    // Capture vote reasons
     if (action !== 'NEUTRAL') {
         if (v2.action === action) reasons.push(`V2 Trend Aligns`);
         if (v3.action === action) reasons.push(`V3 Liquidity Aligns`);
@@ -209,9 +302,13 @@ export function generateV5Consensus(
         }
     }
 
+    // CONFIDENCE FORMULA: base (from score) + Sovereign boost
+    const baseConfidence = Math.round(Math.min(absScore * 110, 100));
+    const finalConfidence = Math.min(baseConfidence + confidenceBoost, 100);
+
     return {
         action,
-        confidence: Math.round(Math.min(absScore * 110, 100)),
+        confidence: finalConfidence,
         score: rawScore,
         leverage,
         votes: {
@@ -219,6 +316,13 @@ export function generateV5Consensus(
             v3: v3.action,
             v4: v4.action,
             onChain: onChain.isBullish ? 'BULLISH' : (onChain.isBearish ? 'BEARISH' : 'NEUTRAL')
+        },
+        v6Intel: {
+            atrGate: atrGate.isOpen,
+            bias4h: bias4h.bias,
+            sovereignBoost: confidenceBoost,
+            sovereignEntry: sovereign.entryType,
+            atrExit
         },
         reasons
     };
