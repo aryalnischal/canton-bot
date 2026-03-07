@@ -178,16 +178,8 @@ export function checkSovereignEntry(
         return { ...noEntry, trendAligned, rsi, reason: '🚫 Sovereign: No precision entry pattern — trade blocked' };
     }
 
-    // CHANGE 4: Skip BTC pullbacks (20% WR in backtest)
-    const sym = (symbol || '').toUpperCase();
-    if (entryType === 'PULLBACK' && (sym.includes('BTC') || sym === 'BTC-USD')) {
-        return {
-            entryConfirmed: false, entryType: 'PULLBACK', boostPct: 0,
-            trendAligned, rsi,
-            reason: '🚫 Sovereign: BTC pullback skipped (20% WR)',
-            skipReason: 'BTC_PULLBACK_SKIP'
-        };
-    }
+    // BTC pullbacks are now handled universally by ATR-based SL/TP
+    // (no asset-specific hardcoding — the adaptive stops prevent wick stop-outs)
 
     // Calculate confidence boost
     let boostPct = 0;
