@@ -4,7 +4,7 @@ import { ScannerService } from '@/services/scanner';
 import { logActivity } from '@/lib/activity-store';
 
 // Cache
-const CACHE_TTL = 2 * 60 * 1000;
+const CACHE_TTL = 5 * 60 * 1000;  // 5 min — longer TTL prevents dashboard scans from competing with headless bot
 let cache = {
     data: null as any,
     timestamp: 0

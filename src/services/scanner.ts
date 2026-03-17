@@ -7,11 +7,12 @@ import { generateV5Consensus } from '@/lib/v5/analysis-v5';
 import { calculateMaxPain } from '@/services/deribit-api';
 import { fetchCoinglassData } from '@/services/coinglass';
 import { fetchOnChainMetrics } from '@/services/on-chain';
+import { rateLimitedCall } from '@/lib/dydx-rate-limiter';
 
 // Helper: Fetch Orderbook Imbalance (Whale Score Proxy)
 async function getOrderbookImbalance(client: IndexerClient, symbol: string): Promise<{ ratio: number, depth: number }> {
     try {
-        const ob = await (client as any).orderbook.getPerpetualMarketOrderbook(symbol);
+        const ob = await rateLimitedCall(() => (client as any).orderbook.getPerpetualMarketOrderbook(symbol));
 
         if (!ob || !ob.bids || !ob.asks) return { ratio: 0.5, depth: 0 };
 
@@ -63,7 +64,7 @@ export class ScannerService {
         console.log("[SCANNER] Scanning dYdX v4 Markets...");
 
         // 1. Get All Markets
-        const response = await this.indexer.markets.getPerpetualMarkets();
+        const response = await rateLimitedCall(() => this.indexer.markets.getPerpetualMarkets());
         const markets = response.markets;
         const marketKeys = Object.keys(markets).filter(k =>
             k.endsWith('USD') &&
@@ -104,8 +105,8 @@ export class ScannerService {
         console.log(`   > Top Volume (10): ${volumeTargets.join(', ')}`);
         console.log(`   > Top OI (5)     : ${oiTargets.join(', ')}`);
 
-        // BATCHED PARALLEL FETCHING (3 at a time — conservative for dYdX rate limits)
-        const BATCH_SIZE = 3;
+        // BATCHED PARALLEL FETCHING (2 at a time — conservative for dYdX rate limits)
+        const BATCH_SIZE = 2;
 
         // Fetch on-chain data ONCE (it's global, not per-symbol)
         const onChainData = await fetchOnChainMetrics('global');
@@ -124,7 +125,7 @@ export class ScannerService {
 
             // Delay between batches (not between individual symbols)
             if (i + BATCH_SIZE < targets.length) {
-                await new Promise(r => setTimeout(r, 1000));
+                await new Promise(r => setTimeout(r, 3000));
             }
         }
 
@@ -150,13 +151,14 @@ export class ScannerService {
                 try {
                     // Fetch per-symbol data in parallel (on-chain already fetched once)
                     // V6 ENGINE: Now also fetching 4H candles for multi-timeframe Sovereign–SulCrypto hybrid
+                    // dYdX calls go through rate limiter; external APIs (CoinGlass, Deribit) are parallel
                     [candles, candles4h, imbalance, maxPain, coinglassData] = await Promise.all([
-                        (this.indexer as any).markets.getPerpetualMarketCandles(
+                        rateLimitedCall(() => (this.indexer as any).markets.getPerpetualMarketCandles(
                             symbol, '15MINS', undefined, undefined, 50
-                        ),
-                        (this.indexer as any).markets.getPerpetualMarketCandles(
+                        )),
+                        rateLimitedCall(() => (this.indexer as any).markets.getPerpetualMarketCandles(
                             symbol, '4HOURS', undefined, undefined, 50
-                        ),
+                        )),
                         getOrderbookImbalance(this.indexer, symbol),
                         calculateMaxPain(symbol).catch(() => 0),
                         fetchCoinglassData(symbol),       // REAL CoinGlass API
