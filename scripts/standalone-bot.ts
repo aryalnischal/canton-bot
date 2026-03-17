@@ -123,13 +123,19 @@ async function executeTrade(signal: any, engine: DydxExecutionService) {
     console.log(`${YELLOW}💰 Collateral: $${baseCollateral} × ${targetLeverage}x = $${size} notional${RESET}`);
     const tpPrice = isBuy ? price * 1.015 : price * 0.985;
 
-    // ATR-BASED STOP LOSS — wide stops for high-conviction trades
+    // ATR-BASED STOP LOSS — prefer V6 exit intelligence, fallback to standalone calc
     let slDistance = 0.08; // Default 8%
-    if (signal.candles?.length >= 14) {
+    if (signal.atrSl && signal.atr && price > 0) {
+        // V6 EXIT INTELLIGENCE: Use blended SL from consensus (1.5× ATR — Sovereign+SulCrypto hybrid)
+        const v6SlPct = signal.atrSl / price;
+        slDistance = Math.min(Math.max(v6SlPct, 0.05), 0.15); // Safety clamp 5%-15%
+        console.log(`${YELLOW}🛡️ V6 ATR SL: ATR=$${signal.atr.toFixed(2)} | SL=$${signal.atrSl.toFixed(2)} (${(v6SlPct * 100).toFixed(2)}%) → Clamped: ${(slDistance * 100).toFixed(2)}%${RESET}`);
+    } else if (signal.candles?.length >= 14) {
+        // FALLBACK: Standalone ATR calc (3× ATR) when V6 data unavailable
         const atr = calculateATR(signal.candles, 14);
         const atrPct = atr / price;
         slDistance = Math.min(Math.max(atrPct * 3, 0.05), 0.15); // 3× ATR, clamped 5%-15%
-        console.log(`${YELLOW}🛡️ Dynamic SL: ATR=${(atrPct * 100).toFixed(2)}% → Distance: ${(slDistance * 100).toFixed(2)}%${RESET}`);
+        console.log(`${YELLOW}🛡️ Fallback SL: ATR=${(atrPct * 100).toFixed(2)}% → Distance: ${(slDistance * 100).toFixed(2)}%${RESET}`);
     }
 
     // Snapshot position BEFORE order
