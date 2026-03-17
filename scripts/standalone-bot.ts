@@ -142,11 +142,14 @@ async function executeTrade(signal: any, engine: DydxExecutionService) {
     const preAccount = await engine.getAccountState();
     const prePosSize = Math.abs(parseFloat(preAccount?.openPositions?.[symbol]?.size || '0'));
 
-    // ADAPTIVE TP — get tier-specific config using live 15-min candles
+    // ADAPTIVE TP — get tier-specific config for trailing stop + ROE exits (managed in managePositions loop)
+    // NOTE: On-chain TP layers REMOVED — they were front-running the trailing stop at +0.85%
+    // and closing positions before real moves could develop. All profit-taking now handled by:
+    //   1. Trailing stop (activates at tier-specific PnL%, trails % below peak)
+    //   2. ROE-based TP1/TP2 (partial close at ROE threshold, full close at higher ROE)
     const tpConfig = getAdaptiveTpConfig(symbol, signal.candles);
-    console.log(`${CYAN}🎯 Adaptive TP: ${symbol} → ${tpConfig.tier}${tpConfig.tierBumped ? ' (BUMPED)' : ''} | volMul: ${tpConfig.volMultiplier}x${RESET}`);
-    console.log(`${CYAN}   Layers: ${tpConfig.layers.map((l, i) => `TP${i + 1}: ${Math.round(l.pct * 100)}% @ +${(l.gain * 100).toFixed(1)}%`).join(' | ')}${RESET}`);
-    console.log(`${CYAN}   ROE: TP1 >${tpConfig.roeTP1}% | TP2 >${tpConfig.roeTP2}% | Trail: act +${tpConfig.trailActivation}% / ${Math.round(tpConfig.trailPercent * 100)}%${RESET}`);
+    console.log(`${CYAN}🎯 Exit Strategy: ${symbol} → ${tpConfig.tier}${tpConfig.tierBumped ? ' (BUMPED)' : ''} | volMul: ${tpConfig.volMultiplier}x${RESET}`);
+    console.log(`${CYAN}   Trail: act +${tpConfig.trailActivation}% / ${Math.round(tpConfig.trailPercent * 100)}% | ROE: TP1 >${tpConfig.roeTP1}% | TP2 >${tpConfig.roeTP2}%${RESET}`);
 
     try {
         const res = await engine.executeOrder(
@@ -155,8 +158,7 @@ async function executeTrade(signal: any, engine: DydxExecutionService) {
                 sl: isBuy
                     ? parseFloat((price * (1 - slDistance)).toFixed(4))
                     : parseFloat((price * (1 + slDistance)).toFixed(4)),
-                tp: price,
-                tpLayers: tpConfig.layers,  // Pass adaptive layers to execution engine
+                // No on-chain TP — trailing stop + ROE handles exits
             }
         );
 
