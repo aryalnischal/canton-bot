@@ -17,6 +17,14 @@ export async function GET() {
     try {
         const now = Date.now();
         if (cache.data && (now - cache.timestamp < CACHE_TTL)) {
+            // Log cached data so activity feed shows real numbers
+            const cached = cache.data;
+            const cachedSignals = cached.signals || [];
+            const cachedActionable = cachedSignals.filter((s: any) => s.action !== 'NEUTRAL');
+            logActivity('SCAN', `Scanned ${cachedSignals.length} markets → ${cachedActionable.length} actionable signals (cached)`, {
+                total: cachedSignals.length,
+                actionable: cachedActionable.map((s: any) => `${s.action} ${s.symbol}`)
+            });
             return NextResponse.json(cache.data);
         }
 
@@ -37,7 +45,6 @@ export async function GET() {
         const { markets, signals } = await scanner.scanMarkets(3);
 
         // 2. Apply API-Specific Filtering (Duplicate Guard)
-        // Note: We modify the result in place for the API response without affecting the Service logic purity
         const filteredSignals = signals.map(consensus => {
             if (openSymbols.has(consensus.symbol) && consensus.action !== 'NEUTRAL') {
                 return {
@@ -56,20 +63,25 @@ export async function GET() {
             timestamp: Date.now()
         };
 
-        // Log scan activity (in-memory, zero overhead)
-        const actionable = filteredSignals.filter((s: any) => s.action !== 'NEUTRAL');
-        const symbolList = filteredSignals.map((s: any) => s.symbol);
-        logActivity('SCAN', `Scanned ${filteredSignals.length} markets → ${actionable.length} actionable signals`, {
-            symbols: symbolList,
-            total: filteredSignals.length,
-            actionable: actionable.map((s: any) => `${s.action} ${s.symbol} (${(s.confidence * 100).toFixed(0)}%)`)
-        });
+        // Only log if we actually got results (avoid misleading "0 markets" on rate-limit failures)
+        if (filteredSignals.length > 0) {
+            const actionable = filteredSignals.filter((s: any) => s.action !== 'NEUTRAL');
+            logActivity('SCAN', `Scanned ${filteredSignals.length} markets → ${actionable.length} actionable signals`, {
+                symbols: filteredSignals.map((s: any) => s.symbol),
+                total: filteredSignals.length,
+                actionable: actionable.map((s: any) => `${s.action} ${s.symbol} (${(s.confidence * 100).toFixed(0)}%)`)
+            });
+        } else {
+            logActivity('SCAN', `Scanner returned 0 targets (rate-limited or low volatility)`, {});
+        }
 
         cache = { data: payload, timestamp: Date.now() };
         return NextResponse.json(payload);
 
     } catch (e: any) {
         console.error("[API] Scan Error", e);
+        logActivity('SCAN', `Scan failed: ${String(e).substring(0, 100)}`, {});
         return NextResponse.json({ success: false, error: String(e) }, { status: 500 });
     }
 }
+
