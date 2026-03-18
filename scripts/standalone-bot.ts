@@ -233,10 +233,41 @@ async function reconcileGhosts(engine: DydxExecutionService) {
         if (age < 30000) continue; // Grace period
 
         if (!pos || size === 0) {
-            console.log(`${CYAN}👻 RECONCILE: ${t.symbol} closed on-chain → marking CLOSED${RESET}`);
+            // Estimate PnL from DB entry price vs last known oracle price
+            // This won't be exact but far better than recording $0
+            let exitPrice = 0;
+            let pnlValue = 0;
+            let pnlPercent = 0;
+
+            try {
+                // Try to get current market price from indexer for a close approximation
+                const indexer = (engine as any).client?.indexerClient;
+                if (indexer && t.symbol) {
+                    const resp = await indexer.markets.getPerpetualMarkets();
+                    const mkt = resp?.markets?.[t.symbol];
+                    if (mkt?.oraclePrice) {
+                        exitPrice = parseFloat(mkt.oraclePrice);
+                    }
+                }
+            } catch { /* use fallback below */ }
+
+            const entryPrice = t.price || 0;
+            const tradeSize = t.size || 0;
+            const isLong = t.action === 'BUY';
+
+            if (entryPrice > 0 && exitPrice > 0 && tradeSize > 0) {
+                const priceDiff = isLong ? (exitPrice - entryPrice) : (entryPrice - exitPrice);
+                pnlValue = parseFloat((priceDiff * tradeSize).toFixed(4));
+                pnlPercent = parseFloat(((priceDiff / entryPrice) * 100).toFixed(2));
+            }
+
+            console.log(`${CYAN}👻 RECONCILE: ${t.symbol} closed on-chain → PnL: $${pnlValue.toFixed(2)} (${pnlPercent.toFixed(2)}%) | Exit ≈ $${exitPrice.toFixed(2)}${RESET}`);
             t.status = 'CLOSED';
             t.exitReason = 'Limit/External Close (Reconciled)';
             t.exitTime = Date.now();
+            t.exitPrice = exitPrice || undefined;
+            t.pnlValue = pnlValue;
+            t.pnlPercent = pnlPercent;
             await t.save();
             startCooldown(t.symbol);
         }
