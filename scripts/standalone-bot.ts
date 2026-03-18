@@ -113,9 +113,9 @@ async function executeTrade(signal: any, engine: DydxExecutionService) {
     // DYNAMIC POSITION SIZING — high conviction = bigger size
     const acctState = await engine.getAccountState();
     const freeCol = parseFloat(acctState?.freeCollateral || '0');
-    const baseCollateral = Math.floor(freeCol * 0.20); // 20% of free collateral per trade (4 slots × 20% = 80% max)
+    const baseCollateral = Math.floor(freeCol * 0.30); // 30% of free collateral per trade
     if (baseCollateral < 15) {
-        console.log(`${RED}✘ Insufficient free collateral ($${freeCol.toFixed(2)}). Need at least $75.${RESET}`);
+        console.log(`${RED}✘ Insufficient free collateral ($${freeCol.toFixed(2)}). Need at least $50.${RESET}`);
         pendingSymbols.delete(symbol);
         return;
     }
