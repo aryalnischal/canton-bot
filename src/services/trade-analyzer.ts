@@ -83,6 +83,9 @@ export class TradeAnalyzer {
 
     /**
      * Checks if an asset should be blacklisted based on recent performance.
+     * Reads Trade directly — Analysis rows are only created by the (unused)
+     * manual /api/analysis/autopsy endpoint, so the Analysis collection is
+     * always empty in practice and this gate was previously a permanent no-op.
      */
     static async checkBlacklist(symbol: string): Promise<boolean> {
         await dbConnect();
@@ -90,10 +93,11 @@ export class TradeAnalyzer {
         // Look back 24 hours
         const yesterday = Date.now() - 24 * 60 * 60 * 1000;
 
-        const recentLosses = await Analysis.countDocuments({
+        const recentLosses = await Trade.countDocuments({
             symbol,
-            result: 'LOSS',
-            timestamp: { $gt: yesterday }
+            status: 'CLOSED',
+            pnlPercent: { $lt: 0 },
+            exitTime: { $gt: yesterday }
         });
 
         if (recentLosses >= 3) {
