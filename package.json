@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@dydxprotocol/v4-client-js": "^3.4.0",
+    "@nktkas/hyperliquid": "^0.33.3",
     "axios": "^1.13.2",
     "bip39": "^3.1.0",
     "clsx": "^2.1.1",
@@ -24,6 +25,7 @@
     "react-dom": "19.2.3",
     "recharts": "^3.6.0",
     "tailwind-merge": "^3.4.0",
+    "viem": "^2.55.19",
     "winston": "^3.19.0"
   },
   "devDependencies": {
@@ -36,8 +38,8 @@
     "eslint-config-next": "16.1.1",
     "tailwindcss": "^4",
     "ts-node": "^10.9.2",
-    "tsx": "^4.21.0",
     "tsconfig-paths": "^4.2.0",
+    "tsx": "^4.21.0",
     "typescript": "^5"
   }
 }
