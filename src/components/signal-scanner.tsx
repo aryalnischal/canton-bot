@@ -190,7 +190,7 @@ export function SignalScanner() {
             <div className="rounded-xl border border-zinc-800 bg-zinc-950/50 overflow-hidden shadow-xl">
                 <div className="p-4 border-b border-zinc-800 flex justify-between items-center bg-zinc-900/50">
                     <h3 className="font-semibold text-sm flex items-center gap-2 text-zinc-200">
-                        <Activity className="h-4 w-4 text-emerald-400" /> Active Positions (dYdX)
+                        <Activity className="h-4 w-4 text-emerald-400" /> Active Positions (Hyperliquid)
                     </h3>
                 </div>
                 <div className="overflow-x-auto">
@@ -287,7 +287,7 @@ export function SignalScanner() {
                     </div>
                 ))}
             </div>
-            {isLoading && <div className="text-center text-zinc-500 py-10 animate-pulse">Scanning dYdX Markets...</div>}
+            {isLoading && <div className="text-center text-zinc-500 py-10 animate-pulse">Scanning Hyperliquid Markets...</div>}
 
             {/* ACTIVITY FEED */}
             <div className="rounded-xl border border-zinc-800 bg-zinc-950/50 overflow-hidden shadow-xl">

@@ -47,7 +47,7 @@ export async function POST(req: Request) {
         }
 
         // RISK MANAGEMENT: Server-Side Dynamic Sizing
-        // 1. Get Real Account State (dYdX)
+        // 1. Get Real Account State (Hyperliquid)
         const accountState = await engine.getAccountState(); // Returns Subaccount
         const currentEquity = accountState ? parseFloat(accountState.equity) : 0;
         const freeCollateral = accountState ? parseFloat(accountState.freeCollateral) : 0;
@@ -59,7 +59,7 @@ export async function POST(req: Request) {
         }
 
         // === FAST PATH FOR CLOSE (reduceOnly) ===
-        // Query actual position from dYdX and close it — don't rely on UI size
+        // Query actual position from Hyperliquid and close it — don't rely on UI size
         if (body.reduceOnly) {
             const pos = accountState?.openPositions?.[symbol];
             if (!pos || parseFloat(pos.size) === 0) {

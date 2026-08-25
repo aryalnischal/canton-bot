@@ -6,19 +6,19 @@ const engine = getEngine();
 
 export async function GET() {
     try {
-        // 1. Get Account State from dYdX
+        // 1. Get Account State from Hyperliquid
         const subaccount = await engine.getAccountState();
 
         if (!subaccount) {
             return NextResponse.json({
                 success: false,
-                error: "dYdX Connection Failed or Still Initializing",
+                error: "Hyperliquid Connection Failed or Still Initializing",
                 equity: 0,
                 positions: []
             }, { status: 200 }); // Return 200 to keep UI alive (Startups)
         }
 
-        // 2. Map dYdX State to Frontend Format
+        // 2. Map Hyperliquid State to Frontend Format
         const equity = parseFloat(subaccount.equity || '0');
         const freeCollateral = parseFloat(subaccount.freeCollateral || '0');
 

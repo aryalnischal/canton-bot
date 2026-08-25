@@ -2,7 +2,7 @@
 import * as dotenv from 'dotenv';
 dotenv.config({ path: '.env.local', override: true });
 
-import { DydxExecutionService } from '../src/services/dydx-execution';
+import { HyperliquidExecutionService } from '../src/services/hyperliquid-execution';
 import { ScannerService } from '../src/services/scanner';
 import { calculateATR } from '../src/lib/indicators';
 import { getAdaptiveTpConfig, getBaseTier } from '../src/lib/adaptive-tp';
@@ -32,7 +32,7 @@ const peakPnlMap = new Map<string, number>(); // symbol → highest PnL% seen (f
 async function handleSignals(
     signals: any[],
     account: any,
-    engine: DydxExecutionService
+    engine: HyperliquidExecutionService
 ) {
     if (signals.length === 0) {
         console.log(`${YELLOW}No signals found.${RESET}`);
@@ -92,7 +92,7 @@ async function handleSignals(
 // ===================================================================
 //  TRADE EXECUTION — Place order with dynamic leverage & ATR stop loss
 // ===================================================================
-async function executeTrade(signal: any, engine: DydxExecutionService) {
+async function executeTrade(signal: any, engine: HyperliquidExecutionService) {
     const { symbol, action, price } = signal;
     const isBuy = action === 'BUY';
 
@@ -215,9 +215,9 @@ async function executeTrade(signal: any, engine: DydxExecutionService) {
 }
 
 // ===================================================================
-//  RECONCILIATION — Close "ghost" trades (DB=OPEN, dYdX=closed)
+//  RECONCILIATION — Close "ghost" trades (DB=OPEN, HL=closed)
 // ===================================================================
-async function reconcileGhosts(engine: DydxExecutionService) {
+async function reconcileGhosts(engine: HyperliquidExecutionService) {
     const account = await engine.getAccountState();
     if (!account) return;
 
@@ -278,7 +278,7 @@ async function reconcileGhosts(engine: DydxExecutionService) {
 //  POSITION MANAGEMENT — Trailing stop, hard stop, ROE take-profit
 // ===================================================================
 async function managePositions(
-    engine: DydxExecutionService
+    engine: HyperliquidExecutionService
 ) {
     const account = await engine.getAccountState();
     if (!account?.openPositions) return;
@@ -354,7 +354,7 @@ function startCooldown(symbol: string) {
 async function closeAndRecord(
     symbol: string, closeSide: 'BUY' | 'SELL', sizeUsd: number,
     currentPrice: number, pnlPct: number, uPnl: number,
-    exitReason: string, engine: DydxExecutionService
+    exitReason: string, engine: HyperliquidExecutionService
 ) {
     await engine.executeOrder(symbol, closeSide, sizeUsd, currentPrice, 1, true);
     await Trade.updateMany(
@@ -367,7 +367,7 @@ async function closeAndRecord(
 async function handleTakeProfit(
     symbol: string, closeSide: 'BUY' | 'SELL', size: number,
     currentPrice: number, pnlPct: number, uPnl: number,
-    engine: DydxExecutionService, isLong: boolean
+    engine: HyperliquidExecutionService, isLong: boolean
 ) {
     const matchedTrade = await Trade.findOne({ symbol, status: 'OPEN' });
     const leverage = matchedTrade?.leverage || 3;
@@ -399,7 +399,7 @@ async function main() {
     console.log(`${CYAN}   CANTON TRADING BOT - HEADLESS MODE    ${RESET}`);
     console.log(`${CYAN}=========================================${RESET}`);
 
-    const engine = new DydxExecutionService();
+    const engine = new HyperliquidExecutionService();
     const scanner = new ScannerService();
 
     console.log("Connecting to MongoDB...");
@@ -414,17 +414,17 @@ async function main() {
     console.log(`\n${CYAN}--- Preflight API Validation ---${RESET}`);
     let preflightPassed = true;
 
-    // 1. dYdX API
+    // 1. Hyperliquid API
     try {
         const acct = await engine.getAccountState();
         if (acct?.equity) {
-            console.log(`${GREEN}✔ dYdX API     : OK (Balance: $${parseFloat(acct.equity).toFixed(2)})${RESET}`);
+            console.log(`${GREEN}✔ Hyperliquid API     : OK (Balance: $${parseFloat(acct.equity).toFixed(2)})${RESET}`);
         } else {
-            console.log(`${RED}✘ dYdX API     : No account data${RESET}`);
+            console.log(`${RED}✘ Hyperliquid API     : No account data${RESET}`);
             preflightPassed = false;
         }
     } catch (e) {
-        console.log(`${RED}✘ dYdX API     : FAILED${RESET}`, e);
+        console.log(`${RED}✘ Hyperliquid API     : FAILED${RESET}`, e);
         preflightPassed = false;
     }
 
@@ -455,7 +455,7 @@ async function main() {
     }
 
     if (!preflightPassed) {
-        console.log(`${RED}\n⛔ CRITICAL: dYdX API failed preflight. Cannot trade safely. Exiting.${RESET}`);
+        console.log(`${RED}\n⛔ CRITICAL: Hyperliquid API failed preflight. Cannot trade safely. Exiting.${RESET}`);
         process.exit(1);
     }
 

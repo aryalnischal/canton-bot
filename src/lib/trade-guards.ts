@@ -3,7 +3,7 @@
 
 import dbConnect from '@/lib/db';
 import Trade from '@/models/Trade';
-import { DydxExecutionService } from '@/services/dydx-execution';
+import { HyperliquidExecutionService } from '@/services/hyperliquid-execution';
 
 export interface GuardResult {
     allowed: boolean;
@@ -21,7 +21,7 @@ const DAILY_DRAWDOWN_PCT = -10; // Circuit breaker threshold
  * 5-Layer Pre-Trade Check.
  * Call this BEFORE every trade execution.
  *
- * Layer 1: On-Chain Position Check (dYdX)
+ * Layer 1: On-Chain Position Check (Hyperliquid)
  * Layer 2: DB Duplicate Check (MongoDB)
  * Layer 3: Cooldown Timer (30min after close)
  * Layer 4: Max Position Limit (3)
@@ -30,7 +30,7 @@ const DAILY_DRAWDOWN_PCT = -10; // Circuit breaker threshold
 export async function preTradeCheck(
     symbol: string,
     action: 'BUY' | 'SELL',
-    engine: DydxExecutionService
+    engine: HyperliquidExecutionService
 ): Promise<GuardResult> {
 
     // ── Layer 1: ON-CHAIN POSITION CHECK ──

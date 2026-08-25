@@ -1,13 +1,13 @@
-// Shared DydxExecutionService Singleton
+// Shared HyperliquidExecutionService Singleton
 // Prevents multiple wallet/client connections across API routes.
 
-import { DydxExecutionService } from '@/services/dydx-execution';
+import { HyperliquidExecutionService } from '@/services/hyperliquid-execution';
 
-let instance: DydxExecutionService | null = null;
+let instance: HyperliquidExecutionService | null = null;
 
-export function getEngine(): DydxExecutionService {
+export function getEngine(): HyperliquidExecutionService {
     if (!instance) {
-        instance = new DydxExecutionService();
+        instance = new HyperliquidExecutionService();
     }
     return instance;
 }
