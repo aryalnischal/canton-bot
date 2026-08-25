@@ -6,6 +6,7 @@ import { DydxExecutionService } from '../src/services/dydx-execution';
 import { ScannerService } from '../src/services/scanner';
 import { calculateATR } from '../src/lib/indicators';
 import { getAdaptiveTpConfig, getBaseTier } from '../src/lib/adaptive-tp';
+import { MAX_POSITIONS } from '../src/lib/trade-guards';
 
 // ANSI Colors
 const CYAN = '\x1b[36m';
@@ -24,7 +25,6 @@ const COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes
 const cooldownMap = new Map<string, number>(); // symbol → cooldown expiry timestamp
 const peakPnlMap = new Map<string, number>(); // symbol → highest PnL% seen (for trailing stop)
 // TRAIL constants removed — now dynamic per asset via adaptive-tp.ts
-const MAX_POSITIONS = 4; // Max concurrent positions — balanced diversification
 
 // ===================================================================
 //  SIGNAL HANDLER — Process new signals and execute trades
@@ -73,7 +73,7 @@ async function handleSignals(
             }
         } catch { /* DB not available */ }
 
-        // CONFIDENCE GATE (60% = high-conviction only — raised from 40% per investigation report RC4)
+        // CONFIDENCE GATE (45% = high-conviction only — raised from 40% per investigation report RC4)
         if (signal.confidence <= 45) {
             console.log(`${YELLOW}skipped (confidence ${signal.confidence}% < 45%)${RESET}`);
             continue;
@@ -275,30 +275,15 @@ async function reconcileGhosts(engine: DydxExecutionService) {
 }
 
 // ===================================================================
-//  POSITION MANAGEMENT — Soft stops, take profits, stale exits
+//  POSITION MANAGEMENT — Trailing stop, hard stop, ROE take-profit
 // ===================================================================
 async function managePositions(
-    engine: DydxExecutionService,
-    scanner: ScannerService
+    engine: DydxExecutionService
 ) {
     const account = await engine.getAccountState();
     if (!account?.openPositions) return;
 
     const positions = account.openPositions;
-
-    // Quick scan: do any positions need active management?
-    let needFreshSignals = false;
-    for (const key in positions) {
-        const p = positions[key];
-        if (parseFloat(p.size) === 0) continue;
-        const pnlPct = calcPnlPct(p);
-        if (pnlPct < -5.0 || pnlPct > 0.5) { needFreshSignals = true; break; }
-    }
-
-    let freshSignals: any[] = [];
-    if (needFreshSignals) {
-        freshSignals = (await scanner.scanMarkets()).signals || [];
-    }
 
     for (const key in positions) {
         const p = positions[key];
@@ -354,29 +339,12 @@ async function managePositions(
             continue;
         }
 
-        // 1. SOFT STOP (-8% legacy threshold — now also unconditional, see handleSoftStop)
-        if (pnlPct < -8.0) {
-            await handleSoftStop(symbol, closeSide, size, currentPrice, pnlPct, uPnl, freshSignals, engine, isLong);
-            peakPnlMap.delete(symbol);
-            continue;
-        }
-
-        // 2. PROFIT TAKING (ROE-based)
+        // PROFIT TAKING (ROE-based)
         await handleTakeProfit(symbol, closeSide, size, currentPrice, pnlPct, uPnl, engine, isLong);
-
-        // (Stale guard removed — high-conviction trades can run for days)
     }
 }
 
 // ===== HELPERS =====
-
-function calcPnlPct(p: any): number {
-    const size = parseFloat(p.size);
-    const uPnl = parseFloat(p.unrealizedPnl);
-    const entry = parseFloat(p.entryPrice);
-    const cost = Math.abs(size * entry);
-    return (uPnl / cost) * 100;
-}
 
 function startCooldown(symbol: string) {
     cooldownMap.set(symbol, Date.now() + COOLDOWN_MS);
@@ -394,18 +362,6 @@ async function closeAndRecord(
         { status: 'CLOSED', exitPrice: currentPrice, exitTime: Date.now(), exitReason, pnlValue: uPnl, pnlPercent: pnlPct }
     );
     startCooldown(symbol);
-}
-
-async function handleSoftStop(
-    symbol: string, closeSide: 'BUY' | 'SELL', size: number,
-    currentPrice: number, pnlPct: number, uPnl: number,
-    signals: any[], engine: DydxExecutionService, isLong: boolean
-) {
-    // RC5 FIX: Soft stop is now UNCONDITIONAL — always closes at -8% PnL
-    // Previously could HOLD losers if "thesis was strong". That behavior caused catastrophic losses.
-    const reason = `Soft Stop: Unconditional close at ${pnlPct.toFixed(2)}% PnL`;
-    console.log(`${RED}🚨 MANAGED EXIT: ${symbol} (${reason})${RESET}`);
-    await closeAndRecord(symbol, closeSide, Math.abs(size * currentPrice), currentPrice, pnlPct, uPnl, reason, engine);
 }
 
 async function handleTakeProfit(
@@ -432,20 +388,6 @@ async function handleTakeProfit(
     else if (roePct > tpConfig.roeTP2) {
         console.log(`${GREEN}🚀 TP2 MOONBAG: ${symbol} [${tpConfig.tier}] (+${roePct.toFixed(2)}% ROE > ${tpConfig.roeTP2}%) — Closing All${RESET}`);
         await closeAndRecord(symbol, closeSide, Math.abs(size * currentPrice), currentPrice, pnlPct, uPnl, `TP2 [${tpConfig.tier}] (ROE ${roePct.toFixed(0)}% > ${tpConfig.roeTP2}%)`, engine);
-    }
-}
-
-async function handleStaleExit(
-    p: any, symbol: string, closeSide: 'BUY' | 'SELL', size: number,
-    currentPrice: number, pnlPct: number, uPnl: number,
-    engine: DydxExecutionService, isLong: boolean
-) {
-    if (!p.createdAt) return;
-    const durationHours = (Date.now() - new Date(p.createdAt).getTime()) / 3_600_000;
-
-    if (durationHours > 4.0 && pnlPct < 1.0) {
-        console.log(`${YELLOW}⌛ STALE: ${symbol} (${durationHours.toFixed(1)}h, ${pnlPct.toFixed(2)}%)${RESET}`);
-        await closeAndRecord(symbol, closeSide, Math.abs(size * currentPrice), currentPrice, pnlPct, uPnl, `Stale (>${durationHours.toFixed(0)}h)`, engine);
     }
 }
 
@@ -540,7 +482,7 @@ async function main() {
             await handleSignals(signals, account, engine);
 
             // D. Manage open positions
-            await managePositions(engine, scanner);
+            await managePositions(engine);
 
         } catch (e) {
             console.error(`${RED}Loop Error:${RESET}`, e);

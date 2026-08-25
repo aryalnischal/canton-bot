@@ -12,7 +12,9 @@ export interface GuardResult {
 }
 
 const COOLDOWN_MINUTES = 30;  // Min time after closing before re-entering same symbol
-const MAX_POSITIONS = 3;      // Max simultaneous open trades
+// Shared with scripts/standalone-bot.ts — was hardcoded separately there as 4,
+// which silently drifted from this file's old value of 3. Single source of truth now.
+export const MAX_POSITIONS = 4;      // Max simultaneous open trades
 const DAILY_DRAWDOWN_PCT = -10; // Circuit breaker threshold
 
 /**
